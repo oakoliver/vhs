@@ -1,0 +1,66 @@
+{
+  "name": "@oakoliver/vhs",
+  "version": "1.0.0",
+  "description": "Write terminal GIFs as code. TypeScript port of Charmbracelet's VHS.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "vhs": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "themes.json"
+  ],
+  "scripts": {
+    "build": "npm run build:esm && npm run build:cjs && npm run build:cli && npm run build:types",
+    "build:esm": "esbuild src/index.ts --bundle --format=esm --platform=node --outfile=dist/index.js --target=esnext",
+    "build:cjs": "esbuild src/index.ts --bundle --format=cjs --platform=node --outfile=dist/index.cjs --target=esnext",
+    "build:cli": "esbuild src/cli.ts --bundle --format=esm --platform=node --outfile=dist/cli.js --target=esnext --banner:js='#!/usr/bin/env node'",
+    "build:types": "tsc --declaration --emitDeclarationOnly --outDir dist",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "terminal",
+    "gif",
+    "recording",
+    "vhs",
+    "cli",
+    "demo",
+    "charmbracelet",
+    "tui",
+    "tape",
+    "video",
+    "ascii",
+    "screencast"
+  ],
+  "author": "Antonio Oliveira <antonio@oakoliver.com> (https://oakoliver.com)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oakoliver/vhs.git"
+  },
+  "homepage": "https://github.com/oakoliver/vhs#readme",
+  "bugs": {
+    "url": "https://github.com/oakoliver/vhs/issues"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.27.4",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
