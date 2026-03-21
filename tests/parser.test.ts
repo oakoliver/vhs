@@ -313,6 +313,65 @@ Show`;
     }
   });
 
+  describe('TestParseAlt', () => {
+    const altTests = [
+      { name: 'Alt+letter', tape: 'Alt+a', wantArgs: 'a', wantErr: false },
+      { name: 'Alt+uppercase', tape: 'Alt+A', wantArgs: 'A', wantErr: false },
+      { name: 'Alt+dot', tape: 'Alt+.', wantArgs: '.', wantErr: false },
+      { name: 'Alt+number 1', tape: 'Alt+1', wantArgs: '1', wantErr: false },
+      { name: 'Alt+number 9', tape: 'Alt+9', wantArgs: '9', wantErr: false },
+      { name: 'Alt+Enter', tape: 'Alt+Enter', wantArgs: 'Enter', wantErr: false },
+      { name: 'Alt+Tab', tape: 'Alt+Tab', wantArgs: 'Tab', wantErr: false },
+      { name: 'Alt+[', tape: 'Alt+[', wantArgs: '[', wantErr: false },
+      { name: 'Alt+]', tape: 'Alt+]', wantArgs: ']', wantErr: false },
+    ];
+
+    for (const tc of altTests) {
+      test(tc.name, () => {
+        const { commands, errors } = parseTape(tc.tape);
+
+        if (tc.wantErr) {
+          expect(errors.length).toBeGreaterThan(0);
+          return;
+        }
+
+        expect(errors.length).toBe(0);
+        expect(commands.length).toBe(1);
+        expect(commands[0].type).toBe(TokenType.ALT);
+        expect(commands[0].args).toBe(tc.wantArgs);
+      });
+    }
+  });
+
+  describe('TestParseShift', () => {
+    const shiftTests = [
+      { name: 'Shift+letter', tape: 'Shift+a', wantArgs: 'a', wantErr: false },
+      { name: 'Shift+uppercase', tape: 'Shift+A', wantArgs: 'A', wantErr: false },
+      { name: 'Shift+number 1', tape: 'Shift+1', wantArgs: '1', wantErr: false },
+      { name: 'Shift+number 9', tape: 'Shift+9', wantArgs: '9', wantErr: false },
+      { name: 'Shift+Enter', tape: 'Shift+Enter', wantArgs: 'Enter', wantErr: false },
+      { name: 'Shift+Tab', tape: 'Shift+Tab', wantArgs: 'Tab', wantErr: false },
+      { name: 'Shift+[', tape: 'Shift+[', wantArgs: '[', wantErr: false },
+      { name: 'Shift+]', tape: 'Shift+]', wantArgs: ']', wantErr: false },
+    ];
+
+    for (const tc of shiftTests) {
+      test(tc.name, () => {
+        const { commands, errors } = parseTape(tc.tape);
+
+        if (tc.wantErr) {
+          expect(errors.length).toBeGreaterThan(0);
+          return;
+        }
+
+        expect(errors.length).toBe(0);
+        expect(commands.length).toBe(1);
+        expect(commands[0].type).toBe(TokenType.SHIFT);
+        expect(commands[0].args).toBe(tc.wantArgs);
+      });
+    }
+  });
+
   describe('TestParseCtrl', () => {
     const ctrlTests = [
       {

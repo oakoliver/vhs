@@ -1,6 +1,6 @@
 {
   "name": "@oakoliver/vhs",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Write terminal GIFs as code. TypeScript port of Charmbracelet's VHS.",
   "type": "module",
   "main": "./dist/index.js",

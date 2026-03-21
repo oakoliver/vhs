@@ -385,6 +385,7 @@ export class Parser {
       const nextPeekType = this.peekType();
       if (
         nextPeekType === TokenType.STRING ||
+        nextPeekType === TokenType.NUMBER ||
         nextPeekType === TokenType.ENTER ||
         nextPeekType === TokenType.LEFT_BRACKET ||
         nextPeekType === TokenType.RIGHT_BRACKET ||
@@ -409,6 +410,7 @@ export class Parser {
       const nextPeekType = this.peekType();
       if (
         nextPeekType === TokenType.STRING ||
+        nextPeekType === TokenType.NUMBER ||
         nextPeekType === TokenType.ENTER ||
         nextPeekType === TokenType.LEFT_BRACKET ||
         nextPeekType === TokenType.RIGHT_BRACKET ||
