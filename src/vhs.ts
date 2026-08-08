@@ -1,7 +1,7 @@
 /**
  * @oakoliver/vhs — VHS core types and options
  *
- * Zero-dependency TypeScript port of Charmbracelet's VHS.
+ * TypeScript port of Charmbracelet VHS v0.11.0 core options.
  *
  * @module
  */
@@ -9,19 +9,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { fileURLToPath } from 'url';
 
-// Get directory name in both ESM and CJS environments
 function getDirname(): string {
-  // Try ESM first
-  try {
-    if (typeof import.meta !== 'undefined' && import.meta.url) {
-      const { fileURLToPath } = require('url') as typeof import('url');
-      return path.dirname(fileURLToPath(import.meta.url));
-    }
-  } catch {
-    // Fallback to CJS
+  if (typeof import.meta.url === 'string' && import.meta.url !== '') {
+    return path.dirname(fileURLToPath(import.meta.url));
   }
-  // CJS fallback
   return typeof __dirname !== 'undefined' ? __dirname : process.cwd();
 }
 
@@ -106,36 +99,37 @@ export const DefaultTheme: Theme = {
   brightWhite: BrightWhite,
 };
 
-// Cache for loaded themes
-let themesCache: Theme[] | null = null;
+const themesCache = new Map<string, Theme[]>();
 
 /**
- * Load themes from themes.json.
+ * Load themes from the bundled themes.json asset or an explicit path.
  */
 export function loadThemes(themesPath?: string): Theme[] {
-  if (themesCache) {
-    return themesCache;
-  }
+  const cacheKey = themesPath ? path.resolve(themesPath) : '<bundled>';
+  const cached = themesCache.get(cacheKey);
+  if (cached) return cached;
 
-  // Try to find themes.json in common locations
-  const searchPaths = [
-    themesPath,
-    path.join(currentDir, '..', 'themes.json'),
-    path.join(currentDir, 'themes.json'),
-    path.join(process.cwd(), 'themes.json'),
-  ].filter(Boolean) as string[];
-
-  for (const p of searchPaths) {
+  const searchPaths = themesPath
+    ? [themesPath]
+    : [
+        path.join(currentDir, '..', 'themes.json'),
+        path.join(currentDir, 'themes.json'),
+        path.join(process.cwd(), 'themes.json'),
+      ];
+  let lastError: unknown;
+  for (const candidate of searchPaths) {
     try {
-      const data = fs.readFileSync(p, 'utf-8');
-      themesCache = JSON.parse(data);
-      return themesCache!;
-    } catch {
-      continue;
+      const themes = JSON.parse(fs.readFileSync(candidate, 'utf-8')) as Theme[];
+      themesCache.set(cacheKey, themes);
+      return themes;
+    } catch (error) {
+      lastError = error;
     }
   }
 
-  return [];
+  throw new Error(
+    `Could not load themes.json${lastError instanceof Error ? `: ${lastError.message}` : ''}`
+  );
 }
 
 /**
@@ -174,12 +168,12 @@ export function findTheme(name: string, themesPath?: string): Theme {
   for (const theme of themes) {
     if (!theme.name) continue;
     const ltheme = theme.name.toLowerCase();
-    if (ltheme.startsWith(lname) || lname.startsWith(ltheme) || levenshteinDistance(lname, ltheme) <= 2) {
+    if (lname.startsWith(ltheme) || levenshteinDistance(lname, ltheme) <= 2) {
       suggestions.push(theme.name);
     }
   }
 
-  throw new ThemeNotFoundError(name, suggestions.slice(0, 5));
+  throw new ThemeNotFoundError(name, suggestions);
 }
 
 /**
@@ -400,11 +394,7 @@ export interface VideoOptions {
  * Create a random temporary directory for frames.
  */
 export function randomDir(): string {
-  const tmpBase = os.tmpdir();
-  const dirName = `vhs-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const dir = path.join(tmpBase, dirName);
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'vhs-'));
 }
 
 /**
@@ -448,6 +438,7 @@ export interface ScreenshotOptions {
   style: StyleOptions;
   frameCaptureEnabled: boolean;
   frameCapturePath: string;
+  screenshots: Map<string, number>;
 }
 
 /**
@@ -459,6 +450,7 @@ export function newScreenshotOptions(input: string, style: StyleOptions): Screen
     style,
     frameCaptureEnabled: false,
     frameCapturePath: '',
+    screenshots: new Map(),
   };
 }
 
@@ -471,6 +463,11 @@ export function newScreenshotOptions(input: string, style: StyleOptions): Screen
  */
 export interface TestOptions {
   output: string;
+  golden: string;
+}
+
+export function defaultTestOptions(): TestOptions {
+  return { output: 'out.test', golden: '' };
 }
 
 // ============================================================================
@@ -488,7 +485,7 @@ const fontsSeparator = ',';
 
 const symbolsFallback = ['Apple Symbols'];
 
-function withSymbolsFallback(font: string): string {
+export function withSymbolsFallback(font: string): string {
   return font + fontsSeparator + symbolsFallback.join(fontsSeparator);
 }
 
@@ -552,7 +549,7 @@ export function defaultVHSOptions(): VHSOptions {
     waitTimeout: defaultWaitTimeout,
     waitPattern: />$/,
     loopOffset: 0,
-    test: { output: '' },
+    test: { output: '', golden: '' },
     style,
     envVars: {},
   };

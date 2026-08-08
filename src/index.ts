@@ -1,7 +1,7 @@
 /**
  * @oakoliver/vhs — Terminal GIF recorder
  *
- * Zero-dependency TypeScript port of Charmbracelet's VHS.
+ * TypeScript port of Charmbracelet VHS v0.11.0.
  *
  * @example
  * ```typescript
@@ -48,7 +48,7 @@ export {
 // Lexer exports
 // ============================================================================
 
-export { Lexer } from './lexer.js';
+export { Lexer, createLexer } from './lexer.js';
 
 // ============================================================================
 // Parser exports
@@ -105,10 +105,12 @@ export {
 
   // Test Options
   type TestOptions,
+  defaultTestOptions,
 
   // VHS Options
   type VHSOptions,
   defaultVHSOptions,
+  withSymbolsFallback,
 
   // VHS State
   type VHSState,
@@ -171,6 +173,25 @@ export {
   type CommandFunc,
 
   // Command functions
+  executeKey,
+  executeScroll,
+  executeWait,
+  executeCtrl,
+  executeAlt,
+  executeShift,
+  executeHide,
+  executeShow,
+  executeRequire,
+  executeSleep,
+  executeType,
+  executeOutput,
+  executeCopy,
+  executePaste,
+  executeEnv,
+  executeScreenshot,
+  executeNoop,
+  settingsExecutors,
+  executeSet,
   CommandFuncs,
   executeCommand,
   executeCommands,
@@ -189,12 +210,17 @@ export {
   type BrowserInterface,
   type TTYInterface,
   type RecordingResult,
+  type RecordingState,
 
   // Functions
   evaluate,
   evaluateFile,
   parseTape as parseAndValidateTape,
+  collectMediaOutputPaths,
+  type MediaOutputPaths,
   createVHSContext,
+  newRecordingState,
+  applyLoopOffset,
 } from './evaluator.js';
 
 // ============================================================================
@@ -205,6 +231,7 @@ export {
   // Utilities
   calcTermDimensions,
   marginFillIsColor,
+  parseHexColor,
 
   // Builders
   FilterComplexBuilder,
@@ -223,6 +250,9 @@ export {
   // Window bar
   type WindowBarStyle,
   generateWindowBarSVG,
+  makeWindowBar,
+  makeBorderRadiusMask,
+  prepareDecorations,
   generateBorderRadiusMaskSVG,
 } from './ffmpeg.js';
 
@@ -238,10 +268,41 @@ export {
   type TTYOptions,
   buildTTYArgs,
   TTYProcess,
+  DefaultTTY,
 
   // Dependency checks
+  executableCandidates,
+  isCommandAvailable,
   isTTYDAvailable,
   isFFmpegAvailable,
   getTTYDVersion,
   getFFmpegVersion,
 } from './tty.js';
+
+export { PuppeteerBrowser, chromeSandboxArgs } from './browser.js';
+export { SystemClipboard, type ClipboardInterface } from './clipboard.js';
+export {
+  EscapeSequences,
+  sleepThreshold,
+  quoteTapeString,
+  inputToTape,
+  recordInteractive,
+  type InteractiveRecordOptions,
+} from './record.js';
+export {
+  serverConfigFromEnv,
+  serverOutputExtension,
+  dropPrivileges,
+  serveSSH,
+  type ServerConfig,
+  type PrivilegeOperations,
+} from './server.js';
+export {
+  VERSION,
+  HELP,
+  MANUAL,
+  parseArgs,
+  ensureDependencies,
+  runCLI,
+  type CLIArgs,
+} from './cli.js';

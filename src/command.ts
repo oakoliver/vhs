@@ -1,7 +1,7 @@
 /**
  * @oakoliver/vhs — Command execution for VHS
  *
- * Zero-dependency TypeScript port of Charmbracelet's VHS command module.
+ * TypeScript port of Charmbracelet VHS v0.11.0 command execution.
  *
  * This module defines command executors that operate on a VHS instance
  * with browser automation (puppeteer/playwright).
@@ -9,18 +9,22 @@
  * @module
  */
 
-import { Command, CommandType } from './parser';
-import { TokenType } from './token';
+import type { Command, CommandType } from './parser.js';
+import { TokenType } from './token.js';
 import {
-  VHSOptions,
   parseDuration,
   Shells,
   findTheme,
   DefaultTheme,
-  Theme,
   themeToString,
-} from './vhs';
-import * as path from 'path';
+  withSymbolsFallback,
+} from './vhs.js';
+import type { VHSOptions, Theme } from './vhs.js';
+import { SystemClipboard } from './clipboard.js';
+import type { ClipboardInterface } from './clipboard.js';
+import { isCommandAvailable } from './tty.js';
+import { withResolvers } from './promise.js';
+const systemClipboard = new SystemClipboard();
 
 // ============================================================================
 // Key Codes (CDP compatible)
@@ -227,6 +231,10 @@ export const keymap: Record<string, KeyInfo> = {
   '\r': { code: KeyCodes.Enter, shift: false, key: 'Enter' },
   '\t': { code: KeyCodes.Tab, shift: false, key: 'Tab' },
   '\x1b': { code: KeyCodes.Escape, shift: false, key: 'Escape' },
+  '←': { code: KeyCodes.ArrowLeft, shift: false, key: '←' },
+  '↑': { code: KeyCodes.ArrowUp, shift: false, key: '↑' },
+  '→': { code: KeyCodes.ArrowRight, shift: false, key: '→' },
+  '↓': { code: KeyCodes.ArrowDown, shift: false, key: '↓' },
 };
 
 // Special key codes for non-character keys
@@ -280,6 +288,8 @@ export interface VHSContext {
 
   /** Type a key */
   typeKey(code: KeyCode, modifiers?: KeyModifiers): Promise<void>;
+  /** Type a chord while keeping intermediate keys held */
+  typeKeyChord?(codes: KeyCode[], modifiers?: KeyModifiers): Promise<void>;
 
   /** Type text character by character */
   typeText(text: string, options?: { delay?: number }): Promise<void>;
@@ -307,6 +317,10 @@ export interface VHSContext {
 
   /** Save output for testing */
   saveOutput(): Promise<void>;
+  /** Clipboard implementation used by Copy and Paste */
+  clipboard?: ClipboardInterface;
+  /** Cancellation for command waits and pacing delays. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -331,8 +345,24 @@ export type CommandFunc = (c: Command, ctx: VHSContext) => Promise<void>;
 /**
  * Sleep utility.
  */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error('Command aborted'));
+  }
+  const { promise, resolve, reject } = withResolvers<void>();
+  let timer: NodeJS.Timeout;
+  const onAbort = () => {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+    reject(signal?.reason instanceof Error ? signal.reason : new Error('Command aborted'));
+  };
+  timer = setTimeout(() => {
+    signal?.removeEventListener('abort', onAbort);
+    resolve();
+  }, ms);
+  signal?.addEventListener('abort', onAbort, { once: true });
+  if (signal?.aborted) onAbort();
+  return promise;
 }
 
 // ============================================================================
@@ -342,24 +372,17 @@ function sleep(ms: number): Promise<void> {
 /**
  * Create a key press executor for a given key.
  */
-function executeKey(code: KeyCode): CommandFunc {
+export function executeKey(code: KeyCode): CommandFunc {
   return async (c: Command, ctx: VHSContext) => {
-    let typingSpeed = ctx.options.typingSpeed;
-    if (c.options) {
-      typingSpeed = parseDuration(c.options);
-    }
-
-    let repeat = 1;
-    if (c.args) {
-      const parsed = parseInt(c.args, 10);
-      if (!isNaN(parsed)) {
-        repeat = parsed;
-      }
-    }
+    const typingSpeed = c.options
+      ? parseCommandDuration(c.options, 'typing speed')
+      : ctx.options.typingSpeed;
+    const parsedRepeat = c.args ? Number(c.args) : 1;
+    const repeat = Number.isInteger(parsedRepeat) ? parsedRepeat : 1;
 
     for (let i = 0; i < repeat; i++) {
       await ctx.typeKey(code);
-      await sleep(typingSpeed);
+      await sleep(typingSpeed, ctx.signal);
     }
   };
 }
@@ -367,24 +390,17 @@ function executeKey(code: KeyCode): CommandFunc {
 /**
  * Create a scroll executor for a given direction.
  */
-function executeScroll(direction: number): CommandFunc {
+export function executeScroll(direction: number): CommandFunc {
   return async (c: Command, ctx: VHSContext) => {
-    let typingSpeed = ctx.options.typingSpeed;
-    if (c.options) {
-      typingSpeed = parseDuration(c.options);
-    }
-
-    let repeat = 1;
-    if (c.args) {
-      const parsed = parseInt(c.args, 10);
-      if (!isNaN(parsed)) {
-        repeat = parsed;
-      }
-    }
+    const typingSpeed = c.options
+      ? parseCommandDuration(c.options, 'typing speed')
+      : ctx.options.typingSpeed;
+    const parsedRepeat = c.args ? Number(c.args) : 1;
+    const repeat = Number.isInteger(parsedRepeat) ? parsedRepeat : 1;
 
     for (let i = 0; i < repeat; i++) {
       await ctx.scroll(direction);
-      await sleep(typingSpeed);
+      await sleep(typingSpeed, ctx.signal);
     }
   };
 }
@@ -396,7 +412,7 @@ function executeScroll(direction: number): CommandFunc {
 /**
  * Execute Wait command - wait for a pattern match.
  */
-const executeWait: CommandFunc = async (c: Command, ctx: VHSContext) => {
+export const executeWait: CommandFunc = async (c: Command, ctx: VHSContext) => {
   const parts = c.args.split(' ');
   const scope = parts[0] || 'Line';
   const rxStr = parts.slice(1).join(' ');
@@ -405,10 +421,10 @@ const executeWait: CommandFunc = async (c: Command, ctx: VHSContext) => {
   if (rxStr) {
     pattern = new RegExp(rxStr);
   }
-
   let timeout = ctx.options.waitTimeout;
+
   if (c.options) {
-    timeout = parseDuration(c.options);
+    timeout = parseCommandDuration(c.options, 'wait timeout');
   }
 
   const checkInterval = 10; // ms
@@ -431,7 +447,7 @@ const executeWait: CommandFunc = async (c: Command, ctx: VHSContext) => {
       throw new Error(`Invalid scope "${scope}"`);
     }
 
-    await sleep(checkInterval);
+    await sleep(checkInterval, ctx.signal);
   }
 
   throw new Error(`Timeout waiting for "${c.args}" to match ${pattern}; last value was: ${lastValue}`);
@@ -440,12 +456,11 @@ const executeWait: CommandFunc = async (c: Command, ctx: VHSContext) => {
 /**
  * Execute Ctrl command - press keys with Ctrl modifier.
  */
-const executeCtrl: CommandFunc = async (c: Command, ctx: VHSContext) => {
-  const keys = c.args.split(' ');
+export const executeCtrl: CommandFunc = async (c: Command, ctx: VHSContext) => {
   const modifiers: KeyModifiers = { ctrl: true };
+  const codes: KeyCode[] = [];
 
-  for (const key of keys) {
-    // Check for additional modifiers
+  for (const key of c.args.split(' ')) {
     if (key === 'Shift') {
       modifiers.shift = true;
       continue;
@@ -455,80 +470,76 @@ const executeCtrl: CommandFunc = async (c: Command, ctx: VHSContext) => {
       continue;
     }
 
-    // Get key code
-    let code: KeyCode | undefined;
-    if (specialKeyMap[key]) {
-      code = specialKeyMap[key];
-    } else if (key.length === 1 && keymap[key]) {
-      code = keymap[key].code;
-    }
+    const keyInfo = key.length === 1 ? keymap[key] : undefined;
+    const code = specialKeyMap[key] ?? keyInfo?.code;
+    if (!code) throw new Error(`Invalid control argument: ${key}`);
+    if (keyInfo?.shift) modifiers.shift = true;
+    codes.push(code);
+  }
 
-    if (code) {
-      await ctx.typeKey(code, modifiers);
-    }
+  if (codes.length === 0) throw new Error('Ctrl expects at least one key');
+  if (ctx.typeKeyChord) {
+    await ctx.typeKeyChord(codes, modifiers);
+  } else {
+    for (const code of codes) await ctx.typeKey(code, modifiers);
   }
 };
 
+async function executeModifiedText(
+  value: string,
+  ctx: VHSContext,
+  modifiers: KeyModifiers,
+  label: string,
+): Promise<void> {
+  const special = specialKeyMap[value];
+  if (special) {
+    await ctx.typeKey(special, modifiers);
+    return;
+  }
+  for (const character of value) {
+    const keyInfo = keymap[character];
+    if (!keyInfo) throw new Error(`Invalid ${label} argument: ${character}`);
+    await ctx.typeKey(keyInfo.code, {
+      ...modifiers,
+      shift: modifiers.shift || keyInfo.shift || undefined,
+    });
+  }
+}
+
 /**
- * Execute Alt command - press key with Alt modifier.
+ * Execute Alt command while applying Alt to every parsed character.
  */
-const executeAlt: CommandFunc = async (c: Command, ctx: VHSContext) => {
-  const key = c.args;
-  const modifiers: KeyModifiers = { alt: true };
-
-  let code: KeyCode | undefined;
-  if (specialKeyMap[key]) {
-    code = specialKeyMap[key];
-  } else if (key.length === 1 && keymap[key]) {
-    code = keymap[key].code;
-  }
-
-  if (code) {
-    await ctx.typeKey(code, modifiers);
-  }
+export const executeAlt: CommandFunc = async (c: Command, ctx: VHSContext) => {
+  await executeModifiedText(c.args, ctx, { alt: true }, 'alt');
 };
 
 /**
- * Execute Shift command - press key with Shift modifier.
+ * Execute Shift command while applying Shift to every parsed character.
  */
-const executeShift: CommandFunc = async (c: Command, ctx: VHSContext) => {
-  const key = c.args;
-  const modifiers: KeyModifiers = { shift: true };
-
-  let code: KeyCode | undefined;
-  if (specialKeyMap[key]) {
-    code = specialKeyMap[key];
-  } else if (key.length === 1 && keymap[key]) {
-    code = keymap[key].code;
-  }
-
-  if (code) {
-    await ctx.typeKey(code, modifiers);
-  }
+export const executeShift: CommandFunc = async (c: Command, ctx: VHSContext) => {
+  await executeModifiedText(c.args, ctx, { shift: true }, 'shift');
 };
 
 /**
  * Execute Hide command - pause recording.
  */
-const executeHide: CommandFunc = async (_c: Command, ctx: VHSContext) => {
+export const executeHide: CommandFunc = async (_c: Command, ctx: VHSContext) => {
   ctx.pauseRecording();
 };
 
 /**
  * Execute Show command - resume recording.
  */
-const executeShow: CommandFunc = async (_c: Command, ctx: VHSContext) => {
+export const executeShow: CommandFunc = async (_c: Command, ctx: VHSContext) => {
   ctx.resumeRecording();
 };
 
 /**
  * Execute Require command - check if binary exists.
  */
-const executeRequire: CommandFunc = async (c: Command, _ctx: VHSContext) => {
-  const { execSync } = await import('child_process');
-  try {
-    execSync(`which ${c.args}`, { stdio: 'ignore' });
-  } catch {
+export const executeRequire: CommandFunc = async (c: Command, ctx: VHSContext) => {
+  const environment = { ...process.env, ...ctx.options.envVars };
+  if (!(await isCommandAvailable(c.args, environment))) {
     throw new Error(`Required binary not found: ${c.args}`);
   }
 };
@@ -536,18 +547,18 @@ const executeRequire: CommandFunc = async (c: Command, _ctx: VHSContext) => {
 /**
  * Execute Sleep command.
  */
-const executeSleep: CommandFunc = async (c: Command, _ctx: VHSContext) => {
-  const duration = parseDuration(c.args);
-  await sleep(duration);
+export const executeSleep: CommandFunc = async (c: Command, ctx: VHSContext) => {
+  const duration = parseCommandDuration(c.args, 'duration');
+  await sleep(duration, ctx.signal);
 };
 
 /**
  * Execute Type command - type text.
  */
-const executeType: CommandFunc = async (c: Command, ctx: VHSContext) => {
+export const executeType: CommandFunc = async (c: Command, ctx: VHSContext) => {
   let typingSpeed = ctx.options.typingSpeed;
   if (c.options) {
-    typingSpeed = parseDuration(c.options);
+    typingSpeed = parseCommandDuration(c.options, 'typing speed');
   }
 
   for (const char of c.args) {
@@ -560,14 +571,14 @@ const executeType: CommandFunc = async (c: Command, ctx: VHSContext) => {
       await ctx.inputText(char);
       await ctx.waitForIdle();
     }
-    await sleep(typingSpeed);
+    await sleep(typingSpeed, ctx.signal);
   }
 };
 
 /**
  * Execute Output command - set output paths.
  */
-const executeOutput: CommandFunc = async (c: Command, ctx: VHSContext) => {
+export const executeOutput: CommandFunc = async (c: Command, ctx: VHSContext) => {
   switch (c.options) {
     case '.mp4':
       ctx.options.video.output.mp4 = c.args;
@@ -592,18 +603,15 @@ const executeOutput: CommandFunc = async (c: Command, ctx: VHSContext) => {
 /**
  * Execute Copy command - copy text to clipboard.
  */
-const executeCopy: CommandFunc = async (c: Command, _ctx: VHSContext) => {
-  // In a real implementation, this would use a clipboard library
-  // For now, store in a module-level variable
-  clipboardContent = c.args;
+export const executeCopy: CommandFunc = async (c: Command, ctx: VHSContext) => {
+  await (ctx.clipboard ?? systemClipboard).writeText(c.args, ctx.signal);
 };
-
-let clipboardContent = '';
 
 /**
  * Execute Paste command - paste from clipboard.
  */
-const executePaste: CommandFunc = async (_c: Command, ctx: VHSContext) => {
+export const executePaste: CommandFunc = async (_c: Command, ctx: VHSContext) => {
+  const clipboardContent = await (ctx.clipboard ?? systemClipboard).readText(ctx.signal);
   for (const char of clipboardContent) {
     const keyInfo = keymap[char];
     if (keyInfo) {
@@ -619,24 +627,21 @@ const executePaste: CommandFunc = async (_c: Command, ctx: VHSContext) => {
 /**
  * Execute Env command - set environment variable.
  */
-const executeEnv: CommandFunc = async (c: Command, ctx: VHSContext) => {
+export const executeEnv: CommandFunc = async (c: Command, ctx: VHSContext) => {
   ctx.options.envVars[c.options] = c.args;
-  process.env[c.options] = c.args;
 };
 
 /**
  * Execute Screenshot command.
  */
-const executeScreenshot: CommandFunc = async (c: Command, ctx: VHSContext) => {
+export const executeScreenshot: CommandFunc = async (c: Command, ctx: VHSContext) => {
   ctx.screenshotNextFrame(c.args);
 };
 
 /**
  * Execute Noop command.
  */
-const executeNoop: CommandFunc = async () => {
-  // Do nothing
-};
+export const executeNoop: CommandFunc = async () => {};
 
 // ============================================================================
 // Set Command Executors
@@ -645,49 +650,67 @@ const executeNoop: CommandFunc = async () => {
 /**
  * Settings executors map.
  */
-const settingsExecutors: Record<string, CommandFunc> = {
+function parseIntegerSetting(value: string, setting: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) throw new Error(`Failed to parse ${setting}: ${value}`);
+  return parsed;
+}
+
+function parseNumberSetting(value: string, setting: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) throw new Error(`Failed to parse ${setting}: ${value}`);
+  return parsed;
+}
+
+function parseCommandDuration(value: string, setting: string): number {
+  if (!/^\d+(?:\.\d+)?(?:ms|s|m)?$/.test(value)) {
+    throw new Error(`Failed to parse ${setting}: ${value}`);
+  }
+  return parseDuration(value);
+}
+export const settingsExecutors: Readonly<Record<string, CommandFunc>> = {
   FontFamily: async (c, ctx) => {
     ctx.options.fontFamily = c.args;
-    await ctx.evaluate(`() => term.options.fontFamily = '${c.args}'`);
+    await ctx.evaluate(`() => term.options.fontFamily = ${JSON.stringify(withSymbolsFallback(c.args))}`);
   },
 
   FontSize: async (c, ctx) => {
-    const fontSize = parseInt(c.args, 10);
+    const fontSize = parseIntegerSetting(c.args, 'font size');
     ctx.options.fontSize = fontSize;
     await ctx.evaluate(`() => term.options.fontSize = ${fontSize}`);
-    await ctx.evaluate('term.fit');
+    await ctx.evaluate('() => term.fit()');
   },
 
   Framerate: async (c, ctx) => {
-    ctx.options.video.framerate = parseInt(c.args, 10);
+    ctx.options.video.framerate = parseIntegerSetting(c.args, 'framerate');
   },
 
   Height: async (c, ctx) => {
-    ctx.options.video.style.height = parseInt(c.args, 10);
+    ctx.options.video.style.height = parseIntegerSetting(c.args, 'height');
   },
 
   Width: async (c, ctx) => {
-    ctx.options.video.style.width = parseInt(c.args, 10);
+    ctx.options.video.style.width = parseIntegerSetting(c.args, 'width');
   },
 
   LetterSpacing: async (c, ctx) => {
-    const letterSpacing = parseFloat(c.args);
+    const letterSpacing = parseNumberSetting(c.args, 'letter spacing');
     ctx.options.letterSpacing = letterSpacing;
     await ctx.evaluate(`() => term.options.letterSpacing = ${letterSpacing}`);
   },
 
   LineHeight: async (c, ctx) => {
-    const lineHeight = parseFloat(c.args);
+    const lineHeight = parseNumberSetting(c.args, 'line height');
     ctx.options.lineHeight = lineHeight;
     await ctx.evaluate(`() => term.options.lineHeight = ${lineHeight}`);
   },
 
   PlaybackSpeed: async (c, ctx) => {
-    ctx.options.video.playbackSpeed = parseFloat(c.args);
+    ctx.options.video.playbackSpeed = parseNumberSetting(c.args, 'playback speed');
   },
 
   Padding: async (c, ctx) => {
-    ctx.options.video.style.padding = parseInt(c.args, 10);
+    ctx.options.video.style.padding = parseIntegerSetting(c.args, 'padding');
   },
 
   Theme: async (c, ctx) => {
@@ -710,7 +733,7 @@ const settingsExecutors: Record<string, CommandFunc> = {
   },
 
   TypingSpeed: async (c, ctx) => {
-    ctx.options.typingSpeed = parseDuration(c.args);
+    ctx.options.typingSpeed = parseCommandDuration(c.args, 'typing speed');
   },
 
   Shell: async (c, ctx) => {
@@ -722,8 +745,7 @@ const settingsExecutors: Record<string, CommandFunc> = {
   },
 
   LoopOffset: async (c, ctx) => {
-    const value = parseFloat(c.args.replace('%', ''));
-    ctx.options.loopOffset = value;
+    ctx.options.loopOffset = parseNumberSetting(c.args.replace(/%$/, ''), 'loop offset');
   },
 
   MarginFill: async (c, ctx) => {
@@ -731,19 +753,22 @@ const settingsExecutors: Record<string, CommandFunc> = {
   },
 
   Margin: async (c, ctx) => {
-    ctx.options.video.style.margin = parseInt(c.args, 10);
+    ctx.options.video.style.margin = parseIntegerSetting(c.args, 'margin');
   },
 
   WindowBar: async (c, ctx) => {
+    if (!['', 'Colorful', 'ColorfulRight', 'Rings', 'RingsRight'].includes(c.args)) {
+      throw new Error(`Invalid window bar: ${c.args}`);
+    }
     ctx.options.video.style.windowBar = c.args;
   },
 
   WindowBarSize: async (c, ctx) => {
-    ctx.options.video.style.windowBarSize = parseInt(c.args, 10);
+    ctx.options.video.style.windowBarSize = parseIntegerSetting(c.args, 'window bar size');
   },
 
   BorderRadius: async (c, ctx) => {
-    ctx.options.video.style.borderRadius = parseInt(c.args, 10);
+    ctx.options.video.style.borderRadius = parseIntegerSetting(c.args, 'border radius');
   },
 
   WaitPattern: async (c, ctx) => {
@@ -751,10 +776,13 @@ const settingsExecutors: Record<string, CommandFunc> = {
   },
 
   WaitTimeout: async (c, ctx) => {
-    ctx.options.waitTimeout = parseDuration(c.args);
+    ctx.options.waitTimeout = parseCommandDuration(c.args, 'wait timeout');
   },
 
   CursorBlink: async (c, ctx) => {
+    if (c.args !== 'true' && c.args !== 'false') {
+      throw new Error(`Failed to parse cursor blink: ${c.args}`);
+    }
     ctx.options.cursorBlink = c.args === 'true';
   },
 };
@@ -762,7 +790,7 @@ const settingsExecutors: Record<string, CommandFunc> = {
 /**
  * Execute Set command.
  */
-const executeSet: CommandFunc = async (c: Command, ctx: VHSContext) => {
+export const executeSet: CommandFunc = async (c: Command, ctx: VHSContext) => {
   const executor = settingsExecutors[c.options];
   if (executor) {
     await executor(c, ctx);
@@ -782,6 +810,8 @@ export const CommandFuncs: Partial<Record<CommandType, CommandFunc>> = {
   [TokenType.BACKSPACE]: executeKey(KeyCodes.Backspace),
   [TokenType.DELETE]: executeKey(KeyCodes.Delete),
   [TokenType.INSERT]: executeKey(KeyCodes.Insert),
+  [TokenType.HOME]: executeKey(KeyCodes.Home),
+  [TokenType.END]: executeKey(KeyCodes.End),
   [TokenType.DOWN]: executeKey(KeyCodes.ArrowDown),
   [TokenType.ENTER]: executeKey(KeyCodes.Enter),
   [TokenType.LEFT]: executeKey(KeyCodes.ArrowLeft),

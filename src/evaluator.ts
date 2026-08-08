@@ -1,19 +1,28 @@
 /**
  * @oakoliver/vhs — Evaluator for VHS tape files
  *
- * Zero-dependency TypeScript port of Charmbracelet's VHS evaluator module.
+ * TypeScript port of Charmbracelet VHS v0.11.0 evaluation.
  *
  * @module
  */
 
-import { Lexer } from './lexer';
-import { Parser, Command, formatParserError } from './parser';
-import { TokenType } from './token';
-import { VHSOptions, defaultVHSOptions, parseDuration } from './vhs';
-import { executeCommand, VHSContext, KeyCode, KeyModifiers } from './command';
+import { Lexer } from './lexer.js';
+import { Parser, formatParserError } from './parser.js';
+import type { Command, ParserError } from './parser.js';
+import { TokenType } from './token.js';
+import { defaultVHSOptions } from './vhs.js';
+import type { VHSOptions } from './vhs.js';
+import { executeCommand } from './command.js';
+import type { VHSContext, KeyCode, KeyModifiers } from './command.js';
+import { DefaultTTY } from './tty.js';
+import { PuppeteerBrowser } from './browser.js';
+import { SystemClipboard } from './clipboard.js';
+import type { ClipboardInterface } from './clipboard.js';
+import { makeGIF, makeMP4, makeWebM, makeScreenshot } from './ffmpeg.js';
+import { withResolvers } from './promise.js';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
+const defaultClipboard = new SystemClipboard();
 
 // ============================================================================
 // Error Types
@@ -23,8 +32,8 @@ import * as os from 'os';
  * Error for invalid syntax in tape file.
  */
 export class InvalidSyntaxError extends Error {
-  constructor(public errors: { msg: string }[]) {
-    const messages = errors.map((e) => formatParserError(e as any)).join('\n');
+  constructor(public errors: ParserError[]) {
+    const messages = errors.map(formatParserError).join('\n');
     super(`Invalid syntax:\n${messages}`);
     this.name = 'InvalidSyntaxError';
   }
@@ -46,6 +55,14 @@ export interface EvaluatorOptions {
 
   /** TTY interface */
   tty?: TTYInterface;
+  /** Replace tape Output commands before rendering */
+  outputPaths?: string[];
+
+  /** Abort evaluation between commands */
+  signal?: AbortSignal;
+
+  /** Clipboard implementation for Copy and Paste */
+  clipboard?: ClipboardInterface;
 }
 
 /**
@@ -64,6 +81,8 @@ export interface BrowserInterface {
 
   /** Type a key with optional modifiers */
   typeKey(code: KeyCode, modifiers?: KeyModifiers): Promise<void>;
+  /** Type a chord while holding intermediate keys */
+  typeKeyChord?(codes: KeyCode[], modifiers?: KeyModifiers): Promise<void>;
 
   /** Type text */
   typeText(text: string, options?: { delay?: number }): Promise<void>;
@@ -101,7 +120,11 @@ export interface BrowserInterface {
  */
 export interface TTYInterface {
   /** Start TTY server */
-  start(port: number, shell: { command: string[]; env: string[] }): Promise<void>;
+  start(
+    port: number,
+    shell: { command: string[]; env: string[] },
+    env?: Record<string, string>,
+  ): Promise<void>;
 
   /** Stop TTY server */
   stop(): Promise<void>;
@@ -117,24 +140,41 @@ export interface TTYInterface {
 /**
  * Recording state.
  */
-interface RecordingState {
+export interface RecordingState {
   recording: boolean;
   frameCounter: number;
   totalFrames: number;
   screenshotNextFrame: string | null;
+  initializedTestOutputs: Set<string>;
+}
+
+export function newRecordingState(): RecordingState {
+  return {
+    recording: true,
+    frameCounter: 0,
+    totalFrames: 0,
+    screenshotNextFrame: null,
+    initializedTestOutputs: new Set(),
+  };
 }
 
 /**
  * Create a VHS context from options and browser interface.
  */
-function createVHSContext(
+export function createVHSContext(
   options: VHSOptions,
   browser: BrowserInterface,
-  state: RecordingState
+  state: RecordingState,
+  clipboard: ClipboardInterface = defaultClipboard,
+  signal?: AbortSignal,
 ): VHSContext {
   return {
     options,
-    recording: state.recording,
+    get recording() {
+      return state.recording;
+    },
+    clipboard,
+    signal,
 
     pauseRecording() {
       state.recording = false;
@@ -146,6 +186,14 @@ function createVHSContext(
 
     async typeKey(code: KeyCode, modifiers?: KeyModifiers) {
       await browser.typeKey(code, modifiers);
+    },
+
+    async typeKeyChord(codes: KeyCode[], modifiers?: KeyModifiers) {
+      if (browser.typeKeyChord) {
+        await browser.typeKeyChord(codes, modifiers);
+      } else {
+        for (const code of codes) await browser.typeKey(code, modifiers);
+      }
     },
 
     async typeText(text: string, opts?: { delay?: number }) {
@@ -176,15 +224,23 @@ function createVHSContext(
       await browser.scroll(direction);
     },
 
-    screenshotNextFrame(path: string) {
-      state.screenshotNextFrame = path;
+    screenshotNextFrame(filePath: string) {
+      state.screenshotNextFrame = filePath;
+      options.screenshot.frameCaptureEnabled = true;
+      options.screenshot.frameCapturePath = filePath;
     },
 
     async saveOutput() {
-      // Save terminal output for testing
-      if (options.test.output) {
-        const lines = await browser.getBuffer();
-        fs.writeFileSync(options.test.output, lines.join('\n'));
+      if (!options.test.output) return;
+      const outputPath = options.test.output;
+      fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+      const lines = await browser.getBuffer();
+      const contents = `${lines.join('\n')}\n${'─'.repeat(80)}\n`;
+      if (state.initializedTestOutputs.has(outputPath)) {
+        fs.appendFileSync(outputPath, contents);
+      } else {
+        fs.writeFileSync(outputPath, contents);
+        state.initializedTestOutputs.add(outputPath);
       }
     },
   };
@@ -205,55 +261,61 @@ export interface RecordingResult {
 /**
  * Start recording frames.
  */
+function waitForFrameInterval(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(abortError(signal));
+  const { promise, resolve, reject } = withResolvers<void>();
+  let timer: NodeJS.Timeout;
+  const onAbort = () => {
+    clearTimeout(timer);
+    signal.removeEventListener('abort', onAbort);
+    reject(abortError(signal));
+  };
+  timer = setTimeout(() => {
+    signal.removeEventListener('abort', onAbort);
+    resolve();
+  }, ms);
+  signal.addEventListener('abort', onAbort, { once: true });
+  if (signal.aborted) onAbort();
+  return promise;
+}
+
 async function recordFrames(
   browser: BrowserInterface,
   options: VHSOptions,
   state: RecordingState,
   abortSignal: AbortSignal
 ): Promise<void> {
+  if (options.video.framerate <= 0) throw new Error('Framerate must be greater than zero');
   const interval = 1000 / options.video.framerate;
   const framesDir = options.video.input;
 
-  const textFrameFormat = 'frame-text-%05d.png';
-  const cursorFrameFormat = 'frame-cursor-%05d.png';
+  try {
+    while (!abortSignal.aborted) {
+      const startTime = Date.now();
 
-  const formatFrameNumber = (n: number): string => {
-    return n.toString().padStart(5, '0');
-  };
-
-  while (!abortSignal.aborted) {
-    const startTime = Date.now();
-
-    if (state.recording) {
-      try {
-        const textBuffer = await browser.captureTextCanvas();
-        const cursorBuffer = await browser.captureCursorCanvas();
-
+      if (state.recording) {
+        const textBuffer = await raceWithAbort(browser.captureTextCanvas(), abortSignal);
+        const cursorBuffer = await raceWithAbort(browser.captureCursorCanvas(), abortSignal);
         state.frameCounter++;
-        const frameNum = formatFrameNumber(state.frameCounter);
-
+        const frameNum = state.frameCounter.toString().padStart(5, '0');
         fs.writeFileSync(path.join(framesDir, `frame-text-${frameNum}.png`), textBuffer);
         fs.writeFileSync(path.join(framesDir, `frame-cursor-${frameNum}.png`), cursorBuffer);
 
-        // Handle screenshot request
         if (state.screenshotNextFrame) {
-          fs.copyFileSync(
-            path.join(framesDir, `frame-text-${frameNum}.png`),
-            state.screenshotNextFrame
-          );
+          options.screenshot.screenshots.set(state.screenshotNextFrame, state.frameCounter);
+          options.screenshot.frameCaptureEnabled = false;
+          options.screenshot.frameCapturePath = '';
           state.screenshotNextFrame = null;
         }
-      } catch (err) {
-        console.error('Error capturing frame:', err);
       }
+
+      await waitForFrameInterval(Math.max(0, interval - (Date.now() - startTime)), abortSignal);
     }
-
-    const elapsed = Date.now() - startTime;
-    const sleepTime = Math.max(0, interval - elapsed);
-    await new Promise((resolve) => setTimeout(resolve, sleepTime));
+  } catch (error) {
+    if (!abortSignal.aborted) throw error;
+  } finally {
+    state.totalFrames = state.frameCounter;
   }
-
-  state.totalFrames = state.frameCounter;
 }
 
 // ============================================================================
@@ -279,6 +341,38 @@ export function parseTape(tape: string): { commands: Command[]; errors: Error[] 
   return { commands, errors: [] };
 }
 
+export interface MediaOutputPaths {
+  gif: string[];
+  mp4: string[];
+  webm: string[];
+}
+
+export function collectMediaOutputPaths(
+  commands: Command[],
+  overrides?: string[],
+): MediaOutputPaths {
+  const outputs: MediaOutputPaths = { gif: [], mp4: [], webm: [] };
+  if (overrides && overrides.length > 0) {
+    for (const outputPath of overrides) {
+      const extension = path.extname(outputPath).toLowerCase();
+      if (extension === '.gif') outputs.gif.push(outputPath);
+      else if (extension === '.mp4') outputs.mp4.push(outputPath);
+      else if (extension === '.webm') outputs.webm.push(outputPath);
+      else throw new Error(`Unsupported output override: ${outputPath}`);
+    }
+    return outputs;
+  }
+  for (const command of commands) {
+    if (command.type !== TokenType.OUTPUT) continue;
+    if (command.options === '.mp4') outputs.mp4.push(command.args);
+    else if (command.options === '.webm') outputs.webm.push(command.args);
+    else if (!['.png', '.test', '.ascii', '.txt'].includes(command.options)) {
+      outputs.gif.push(command.args);
+    }
+  }
+  return outputs;
+}
+
 /**
  * Double a value (utility function).
  */
@@ -301,6 +395,41 @@ function getMinDimensions(options: VHSOptions): { minWidth: number; minHeight: n
   return { minWidth, minHeight };
 }
 
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error('Evaluation aborted');
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError(signal);
+}
+
+async function raceWithAbort<T>(
+  operation: Promise<T>,
+  signal?: AbortSignal,
+  cleanupAfterLateCompletion?: () => void,
+): Promise<T> {
+  if (!signal) return operation;
+  if (signal.aborted) {
+    const settle = cleanupAfterLateCompletion ?? (() => {});
+    void operation.then(settle, settle);
+    throw abortError(signal);
+  }
+  const aborted = withResolvers<never>();
+  const onAbort = () => aborted.reject(abortError(signal));
+  signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    if (signal.aborted) onAbort();
+    return await Promise.race([operation, aborted.promise]);
+  } catch (error) {
+    if (signal.aborted && cleanupAfterLateCompletion) {
+      void operation.then(cleanupAfterLateCompletion, cleanupAfterLateCompletion);
+    }
+    throw error;
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
 /**
  * Evaluate a VHS tape file.
  *
@@ -312,192 +441,211 @@ export async function evaluate(
   tape: string,
   evalOptions: EvaluatorOptions = {}
 ): Promise<{ errors: Error[] }> {
-  const output = evalOptions.output || console.log;
-
-  // Parse the tape
+  const output = evalOptions.output ?? console.log;
   const { commands, errors: parseErrors } = parseTape(tape);
-  if (parseErrors.length > 0) {
-    return { errors: parseErrors };
-  }
+  if (parseErrors.length > 0) return { errors: parseErrors };
 
-  // Initialize options
   const options = defaultVHSOptions();
-  const state: RecordingState = {
-    recording: true,
-    frameCounter: 0,
-    totalFrames: 0,
-    screenshotNextFrame: null,
-  };
-
-  // Check if browser and tty interfaces are provided
-  if (!evalOptions.browser || !evalOptions.tty) {
-    return {
-      errors: [new Error('Browser and TTY interfaces are required. Use createDefaultEvaluator() for built-in support.')],
-    };
-  }
-
-  const browser = evalOptions.browser;
-  const tty = evalOptions.tty;
+  const state = newRecordingState();
+  const browser = evalOptions.browser ?? new PuppeteerBrowser();
+  const tty = evalOptions.tty ?? new DefaultTTY();
+  const clipboard = evalOptions.clipboard ?? defaultClipboard;
+  const context = createVHSContext(options, browser, state, clipboard, evalOptions.signal);
+  let preserveFrames = false;
 
   try {
-    // Pre-process: Execute Shell and Env settings before starting
-    for (const cmd of commands) {
-      if ((cmd.type === TokenType.SET && cmd.options === 'Shell') || cmd.type === TokenType.ENV) {
-        const ctx = createVHSContext(options, browser, state);
-        await executeCommand(cmd, ctx);
+    throwIfAborted(evalOptions.signal);
+    for (const command of commands) {
+      throwIfAborted(evalOptions.signal);
+      if ((command.type === TokenType.SET && command.options === 'Shell') || command.type === TokenType.ENV) {
+        await raceWithAbort(executeCommand(command, context), evalOptions.signal);
       }
     }
 
-    // Start TTY server
-    const port = await tty.getPort();
-    await tty.start(port, options.shell);
-
-    // Launch browser
-    await browser.launch(`http://localhost:${port}`, {
+    const port = await raceWithAbort(tty.getPort(), evalOptions.signal);
+    throwIfAborted(evalOptions.signal);
+    const ttyStart = tty.start(port, options.shell, options.envVars);
+    await raceWithAbort(ttyStart, evalOptions.signal, () => {
+      void tty.stop().catch(() => {});
+    });
+    throwIfAborted(evalOptions.signal);
+    const browserLaunch = browser.launch(`http://127.0.0.1:${port}`, {
       width: options.video.style.width,
       height: options.video.style.height,
     });
+    await raceWithAbort(browserLaunch, evalOptions.signal, () => {
+      void browser.close().catch(() => {});
+    });
+    await raceWithAbort(browser.waitForTerminal(), evalOptions.signal);
 
-    // Wait for terminal to be ready
-    await browser.waitForTerminal();
-
-    // Find offset (first non-setting command)
-    let offset = 0;
-    for (let i = 0; i < commands.length; i++) {
-      const cmd = commands[i];
+    let offset = commands.length;
+    for (let index = 0; index < commands.length; index++) {
+      throwIfAborted(evalOptions.signal);
+      const command = commands[index];
       if (
-        cmd.type === TokenType.SET ||
-        cmd.type === TokenType.OUTPUT ||
-        cmd.type === TokenType.REQUIRE
+        command.type === TokenType.SET ||
+        command.type === TokenType.OUTPUT ||
+        command.type === TokenType.REQUIRE
       ) {
-        output(`${cmd.type} ${cmd.options} ${cmd.args}`);
-        if (cmd.options !== 'Shell') {
-          const ctx = createVHSContext(options, browser, state);
-          await executeCommand(cmd, ctx);
+        output(`${command.type} ${command.options} ${command.args}`);
+        if (command.options !== 'Shell') {
+          await raceWithAbort(executeCommand(command, context), evalOptions.signal);
         }
       } else {
-        offset = i;
+        offset = index;
         break;
       }
     }
 
-    // Validate dimensions
     const { minWidth, minHeight } = getMinDimensions(options);
     if (options.video.style.height < minHeight || options.video.style.width < minWidth) {
-      return {
-        errors: [new Error(`Dimensions must be at least ${minWidth} x ${minHeight}`)],
-      };
+      throw new Error(`Dimensions must be at least ${minWidth} x ${minHeight}`);
     }
 
-    // Setup terminal (viewport, theme, etc.)
     const style = options.video.style;
-    const padding = style.padding;
     const margin = style.marginFill ? style.margin : 0;
-    const bar = style.windowBar ? style.windowBarSize : 0;
-    const width = style.width - double(padding) - double(margin);
-    const height = style.height - double(padding) - double(margin) - bar;
-
-    await browser.setViewport(width, height);
-    await browser.evaluate(`() => {
+    const windowBar = style.windowBar ? style.windowBarSize : 0;
+    const width = style.width - 2 * style.padding - 2 * margin;
+    const height = style.height - 2 * style.padding - 2 * margin - windowBar;
+    await raceWithAbort(browser.setViewport(width, height), evalOptions.signal);
+    await raceWithAbort(browser.evaluate(`() => {
       term.options = {
         fontSize: ${options.fontSize},
-        fontFamily: '${options.fontFamily}',
+        fontFamily: ${JSON.stringify(options.fontFamily)},
         letterSpacing: ${options.letterSpacing},
         lineHeight: ${options.lineHeight},
         theme: ${JSON.stringify(options.theme)},
         cursorBlink: ${options.cursorBlink}
       };
       term.fit();
-    }`);
+    }`), evalOptions.signal);
 
-    // Create frames directory
+    fs.rmSync(options.video.input, { recursive: true, force: true });
     fs.mkdirSync(options.video.input, { recursive: true });
 
-    // Handle hidden commands before recording
     if (commands[offset]?.type === TokenType.HIDE) {
-      for (let i = offset; i < commands.length; i++) {
-        const cmd = commands[i];
-        if (cmd.type === TokenType.SHOW) {
-          offset = i;
+      for (let index = offset; index < commands.length; index++) {
+        throwIfAborted(evalOptions.signal);
+        const command = commands[index];
+        if (command.type === TokenType.SHOW) {
+          offset = index;
           break;
         }
-        output(`(hidden) ${cmd.type} ${cmd.args}`);
-        const ctx = createVHSContext(options, browser, state);
-        await executeCommand(cmd, ctx);
+        output(`(hidden) ${command.type} ${command.args}`);
+        await raceWithAbort(executeCommand(command, context), evalOptions.signal);
       }
     }
 
-    // Start recording
-    const abortController = new AbortController();
-    const recordingPromise = recordFrames(browser, options, state, abortController.signal);
-
-    // Execute remaining commands
+    const recordingAbort = new AbortController();
+    const onExternalAbort = () => recordingAbort.abort(evalOptions.signal?.reason);
+    if (evalOptions.signal?.aborted) recordingAbort.abort(evalOptions.signal.reason);
+    evalOptions.signal?.addEventListener('abort', onExternalAbort, { once: true });
+    const recordingPromise = recordFrames(browser, options, state, recordingAbort.signal);
     try {
-      for (let i = offset; i < commands.length; i++) {
-        const cmd = commands[i];
+      for (let index = offset; index < commands.length; index++) {
+        throwIfAborted(evalOptions.signal);
 
-        // Skip settings that should have been at the top
-        const isSetting = cmd.type === TokenType.SET && cmd.options !== 'TypingSpeed';
-        if (isSetting) {
-          output(`WARN: 'Set ${cmd.options} ${cmd.args}' has been ignored. Move the directive to the top of the file.`);
+        const command = commands[index];
+        const lateSetting = command.type === TokenType.SET && command.options !== 'TypingSpeed';
+        if (lateSetting) {
+          output(
+            `WARN: 'Set ${command.options} ${command.args}' has been ignored. ` +
+              'Move the directive to the top of the file.'
+          );
           continue;
         }
+        if (command.type === TokenType.REQUIRE) continue;
 
-        if (cmd.type === TokenType.REQUIRE) {
-          continue;
-        }
-
-        output(`${cmd.type} ${cmd.args}`);
-        const ctx = createVHSContext(options, browser, state);
-        await executeCommand(cmd, ctx);
+        output(`${command.type} ${command.args}`);
+        await raceWithAbort(executeCommand(command, context), evalOptions.signal);
       }
     } finally {
-      // Stop recording
-      abortController.abort();
+      recordingAbort.abort();
+      evalOptions.signal?.removeEventListener('abort', onExternalAbort);
       await recordingPromise;
     }
 
-    // Generate output video
-    await render(options);
-
-    // Cleanup
+    const mediaOutputs = collectMediaOutputPaths(commands, evalOptions.outputPaths);
+    options.video.output.gif = '';
+    options.video.output.mp4 = '';
+    options.video.output.webm = '';
+    await render(options, state.totalFrames, mediaOutputs, evalOptions.signal);
+    throwIfAborted(evalOptions.signal);
     if (options.video.output.frames) {
-      // Move frames to output directory
       fs.renameSync(options.video.input, options.video.output.frames);
-    } else {
-      // Remove temporary frames
-      fs.rmSync(options.video.input, { recursive: true, force: true });
+      preserveFrames = true;
     }
-
     return { errors: [] };
-  } catch (err) {
-    return { errors: [err instanceof Error ? err : new Error(String(err))] };
+  } catch (error) {
+    return { errors: [error instanceof Error ? error : new Error(String(error))] };
   } finally {
-    // Cleanup
     try {
       await browser.close();
     } catch {}
     try {
       await tty.stop();
     } catch {}
+    if (!preserveFrames) {
+      fs.rmSync(options.video.input, { recursive: true, force: true });
+    }
   }
 }
 
-/**
- * Render the final output video.
- */
-async function render(options: VHSOptions): Promise<void> {
-  // Import ffmpeg utilities
-  const { makeGIF, makeMP4, makeWebM } = await import('./ffmpeg');
+/** Rotate the encoded frame sequence according to Set LoopOffset. */
+export function applyLoopOffset(options: VHSOptions, totalFrames: number): void {
+  if (totalFrames <= 0) throw new Error('no frames');
+  const offsetFrames = Math.ceil((options.loopOffset / 100) * totalFrames) % totalFrames;
+  if (offsetFrames <= 0) return;
 
-  if (options.video.output.gif) {
-    await makeGIF(options.video);
+  const firstFrame = options.video.startingFrame;
+  for (let frame = firstFrame; frame <= offsetFrames; frame++) {
+    const sourceNumber = frame.toString().padStart(5, '0');
+    const targetNumber = (frame + totalFrames).toString().padStart(5, '0');
+    fs.renameSync(
+      path.join(options.video.input, `frame-cursor-${sourceNumber}.png`),
+      path.join(options.video.input, `frame-cursor-${targetNumber}.png`)
+    );
+    fs.renameSync(
+      path.join(options.video.input, `frame-text-${sourceNumber}.png`),
+      path.join(options.video.input, `frame-text-${targetNumber}.png`)
+    );
   }
-  if (options.video.output.mp4) {
-    await makeMP4(options.video);
+  for (const [screenshotPath, frame] of options.screenshot.screenshots) {
+    if (frame >= firstFrame && frame <= offsetFrames) {
+      options.screenshot.screenshots.set(screenshotPath, frame + totalFrames);
+    }
   }
-  if (options.video.output.webm) {
-    await makeWebM(options.video);
+  options.video.startingFrame = offsetFrames + 1;
+}
+
+async function render(
+  options: VHSOptions,
+  totalFrames: number,
+  outputs: MediaOutputPaths,
+  signal?: AbortSignal,
+): Promise<void> {
+  applyLoopOffset(options, totalFrames);
+  for (const outputPath of outputs.gif) {
+    options.video.output.gif = outputPath;
+    await makeGIF(options.video, signal);
+  }
+  for (const outputPath of outputs.mp4) {
+    options.video.output.mp4 = outputPath;
+    await makeMP4(options.video, signal);
+  }
+  for (const outputPath of outputs.webm) {
+    options.video.output.webm = outputPath;
+    await makeWebM(options.video, signal);
+  }
+  for (const [outputPath, frame] of options.screenshot.screenshots) {
+    const frameNumber = frame.toString().padStart(5, '0');
+    await makeScreenshot(
+      path.join(options.screenshot.input, `frame-text-${frameNumber}.png`),
+      path.join(options.screenshot.input, `frame-cursor-${frameNumber}.png`),
+      options.screenshot.style,
+      outputPath,
+      signal,
+    );
   }
 }
 
@@ -511,9 +659,3 @@ export async function evaluateFile(
   const tape = fs.readFileSync(tapePath, 'utf-8');
   return evaluate(tape, options);
 }
-
-// ============================================================================
-// Exports
-// ============================================================================
-
-export { createVHSContext };

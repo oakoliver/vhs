@@ -1,8 +1,8 @@
 # @oakoliver/vhs
 
-Write terminal GIFs as code. TypeScript port of [Charmbracelet's VHS](https://github.com/charmbracelet/vhs).
+TypeScript/Node/Bun port of [Charmbracelet VHS](https://github.com/charmbracelet/vhs): write terminal recordings as `.tape` files and render GIF, MP4, WebM, PNG-frame, screenshot, and text outputs.
 
-VHS lets you record terminal sessions and create GIFs, MP4s, and WebM videos using a simple scripting language called `.tape` files.
+**Upstream parity target:** `charmbracelet/vhs` **v0.11.0**. The tape lexer, parser, command evaluator, themes, interactive tape recorder, local CLI, ttyd shell session, browser capture, and ffmpeg render pipeline track that tag. The hosted `vhs publish` workflow is intentionally outside this package's scope.
 
 ## Installation
 
@@ -12,239 +12,128 @@ npm install @oakoliver/vhs
 bun add @oakoliver/vhs
 ```
 
-### Prerequisites
+### Runtime prerequisites
 
-VHS requires these external tools:
+- [ttyd](https://github.com/tsl0922/ttyd) 1.7.2 or newer
+- [ffmpeg](https://ffmpeg.org/)
+- A Puppeteer-compatible Chrome installation (Puppeteer installs one by default)
+- SSH server mode uses the bundled Node SSH implementation; `VHS_UID`/`VHS_GID` privilege dropping is Unix-only because Windows has no process UID/GID equivalent.
 
-- **[ttyd](https://github.com/tsl0922/ttyd)** - Terminal emulator in the browser
-- **[ffmpeg](https://ffmpeg.org/)** - Video encoding
+Chrome sandboxing stays enabled when `VHS_NO_SANDBOX` is unset or empty. Any non-empty value, including `0`, opts out to match upstream environment semantics.
+
+The SSH server denies authentication by default. Set `VHS_AUTHORIZED_KEYS_PATH` to a non-empty OpenSSH `authorized_keys` file. `VHS_ALLOW_UNAUTHENTICATED=1` is an explicit unsafe opt-in for isolated development only; it permits remote tape execution without credentials even when bound to a non-loopback host.
 
 ```bash
 # macOS
 brew install ttyd ffmpeg
 
 # Ubuntu/Debian
-apt install ttyd ffmpeg
+sudo apt install ttyd ffmpeg
 
-# Windows (via scoop)
+# Windows
 scoop install ttyd ffmpeg
 ```
 
-## CLI Usage
+## CLI
 
 ```bash
-# Record a tape file to GIF
-npx @oakoliver/vhs record demo.tape
+# Run a tape (a file, stdin, and multiple output overrides are supported)
+vhs demo.tape
+cat demo.tape | vhs -
+vhs -o demo.gif -o demo.mp4 demo.tape
 
-# Create a new tape file
-npx @oakoliver/vhs new demo.tape
+# Record keystrokes from an interactive shell as tape source
+vhs record --shell zsh > recorded.tape
 
-# Validate a tape file
-npx @oakoliver/vhs validate demo.tape
+# Authoring helpers
+vhs new demo
+vhs validate demo.tape other.tape
+vhs themes
+vhs man
 
-# List available themes
-npx @oakoliver/vhs themes
-
-# Show manual/documentation
-npx @oakoliver/vhs manual
+# Run the stdin-to-media SSH service (configured with VHS_* environment variables)
+VHS_AUTHORIZED_KEYS_PATH="$HOME/.ssh/authorized_keys" vhs serve
 ```
 
-## Tape File Syntax
+`--quiet`, `--help`, and `--version` are also available. `vhs themes --markdown` emits the upstream markdown list form.
 
-Tape files use a simple, readable syntax to describe terminal recordings:
+## Tape language
 
 ```tape
-# demo.tape - A simple VHS demo
 Output demo.gif
+Output demo.mp4
 
-Set FontSize 18
+Set Shell bash
+Set FontFamily "JetBrains Mono"
+Set FontSize 22
 Set Width 1200
 Set Height 600
+Set Padding 60
 Set Theme "Dracula"
+Set TypingSpeed 50ms
+Set Framerate 50
+Set PlaybackSpeed 1.0
+Set CursorBlink true
 
-Type "echo 'Hello, World!'"
+Type "printf 'Hello from VHS\\n'"
 Enter
-Sleep 500ms
-
-Type "ls -la"
-Enter
+Wait+Screen@5s /Hello from VHS/
+ScrollUp 2
+ScrollDown@100ms 2
+Ctrl+Left
 Sleep 1s
-
-Type "exit"
-Enter
+Screenshot terminal.png
 ```
 
 ### Commands
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `Output` | Set output file (.gif, .mp4, .webm) | `Output demo.gif` |
-| `Type` | Type text with realistic timing | `Type "hello world"` |
-| `Type@<speed>` | Type with custom speed | `Type@50ms "fast"` |
-| `Sleep` | Pause for duration | `Sleep 500ms` / `Sleep 2s` |
-| `Enter` | Press Enter key | `Enter` / `Enter 3` |
-| `Backspace` | Press Backspace | `Backspace 5` |
-| `Tab` | Press Tab | `Tab` |
-| `Space` | Press Space | `Space` |
-| `Up/Down/Left/Right` | Arrow keys | `Up 3` |
-| `Ctrl+<key>` | Control key combo | `Ctrl+c` |
-| `Alt+<key>` | Alt key combo | `Alt+Tab` |
-| `Hide` | Hide following commands from output | `Hide` |
-| `Show` | Show commands again | `Show` |
-| `Screenshot` | Take a screenshot | `Screenshot screen.png` |
-| `Wait` | Wait for text/regex in terminal | `Wait /\$\s/` |
-| `Env` | Set environment variable | `Env FOO "bar"` |
-| `Source` | Include another tape file | `Source setup.tape` |
+| Command | Form |
+|---|---|
+| Output | `Output <file.gif|file.mp4|file.webm|folder/|file.test>` |
+| Type | `Type[@<time>] <string>` |
+| Sleep | `Sleep <time>` |
+| Navigation | `Backspace`, `Delete`, `Insert`, `Home`, `End`, `Enter`, `Escape`, `Tab`, `Space`, `Up`, `Down`, `Left`, `Right`, `PageUp`, `PageDown`; repeat count and `@time` are supported |
+| Viewport | `ScrollUp[@<time>] [count]`, `ScrollDown[@<time>] [count]` |
+| Modifiers | `Ctrl[+Alt][+Shift]+<key>`, `Alt+<key>`, `Shift+<key>` |
+| Visibility | `Hide`, `Show` |
+| Conditions | `Wait[+Line|+Screen][@<timeout>] [/regex/]`, `Require <binary>` |
+| Composition | `Source <file.tape>` |
+| Process | `Env <name> <value>` |
+| Clipboard | `Copy <string>`, `Paste` |
+| Image | `Screenshot <file.png>` |
 
-### Settings
+Settings are `Shell`, `FontFamily`, `FontSize`, `Framerate`, `Height`, `Width`, `LetterSpacing`, `LineHeight`, `PlaybackSpeed`, `TypingSpeed`, `Padding`, `Theme`, `LoopOffset`, `MarginFill`, `Margin`, `WindowBar`, `WindowBarSize`, `BorderRadius`, `WaitTimeout`, `WaitPattern`, and `CursorBlink`.
 
-```tape
-Set Shell "bash"
-Set FontFamily "JetBrains Mono"
-Set FontSize 16
-Set Width 1200
-Set Height 600
-Set Padding 20
-Set Theme "Dracula"
-Set TypingSpeed 50ms
-Set Framerate 60
-Set PlaybackSpeed 1.0
-Set CursorBlink false
-```
+Regex delimiters follow v0.11.0 escaping rules: a slash is escaped by an odd run of preceding backslashes and closes the regex after an even run.
 
 ## Programmatic API
 
 ```typescript
-import { 
-  parseTape, 
-  Lexer, 
+import {
+  Lexer,
   Parser,
-  VHSOptions, 
+  evaluate,
+  parseTape,
   defaultVHSOptions,
-  makeGIF,
-  makeMP4,
-  makeWebM
+  type BrowserInterface,
+  type TTYInterface,
 } from '@oakoliver/vhs';
 
-// Parse a tape file
-const { commands, errors } = parseTape(`
-  Output demo.gif
-  Type "hello"
-  Enter
-`);
+const { commands, errors } = parseTape('Type "hello"\nEnter');
 
-if (errors.length > 0) {
-  console.error('Parse errors:', errors);
-} else {
-  console.log('Commands:', commands);
-}
-
-// Work with the lexer directly
-const lexer = new Lexer('Type "hello" Enter');
+const lexer = new Lexer('ScrollUp@100ms 3');
 const tokens = lexer.tokenize();
+const parser = new Parser(lexer);
 
-// Work with the parser
-const parser = new Parser(new Lexer(tapeContent));
-const result = parser.parse();
+// Uses the built-in Puppeteer and ttyd adapters when interfaces are omitted.
+const result = await evaluate('Type "echo hello"\nEnter\nSleep 1s');
 
-// FFmpeg filter builders
-const gifFilters = makeGIF(60, 15); // framerate, max colors
-const mp4Filters = makeMP4();
-const webmFilters = makeWebM();
+// BrowserInterface and TTYInterface may be supplied to isolate browser/TTY
+// process effects in another host application.
 ```
 
-## Themes
-
-VHS includes 300+ terminal themes. List them with:
-
-```bash
-npx @oakoliver/vhs themes
-```
-
-Popular themes include:
-- Dracula
-- One Dark
-- Nord
-- Solarized Dark/Light
-- Gruvbox
-- Tokyo Night
-- Catppuccin
-
-## Examples
-
-### Basic Demo
-
-```tape
-Output demo.gif
-Set Theme "Dracula"
-Set FontSize 18
-
-Type "npm create vite@latest my-app"
-Enter
-Sleep 2s
-```
-
-### Hidden Setup
-
-```tape
-Output demo.gif
-
-# Setup (hidden from recording)
-Hide
-Type "cd ~/projects"
-Enter
-Type "clear"
-Enter
-Show
-
-# Visible demo
-Type "node --version"
-Enter
-Sleep 1s
-```
-
-### Interactive Application
-
-```tape
-Output demo.gif
-Set Width 1200
-Set Height 800
-
-Type "npx create-react-app my-app"
-Enter
-Sleep 3s
-
-# Navigate with arrow keys
-Down
-Down
-Enter
-Sleep 500ms
-
-# Exit with Ctrl+C
-Ctrl+c
-```
-
-## Compatibility
-
-- Node.js 18+
-- Bun
-- Deno
-
-## Credits
-
-This is a TypeScript port of [Charmbracelet's VHS](https://github.com/charmbracelet/vhs), originally written in Go.
-
-Part of the [@oakoliver](https://github.com/oakoliver) Charm ecosystem ports:
-- [@oakoliver/lipgloss](https://github.com/oakoliver/lipgloss) - Style definitions for terminal UIs
-- [@oakoliver/bubbletea](https://github.com/oakoliver/bubbletea) - TUI framework
-- [@oakoliver/bubbles](https://github.com/oakoliver/bubbles) - TUI components
-- [@oakoliver/glamour](https://github.com/oakoliver/glamour) - Markdown rendering
-- [@oakoliver/glow](https://github.com/oakoliver/glow) - Markdown viewer
-- [@oakoliver/huh](https://github.com/oakoliver/huh) - Interactive forms
-- [@oakoliver/gum](https://github.com/oakoliver/gum) - Shell scripting toolkit
+The package also exports command executors, key maps, theme and shell helpers, ffmpeg builders/renderers, `PuppeteerBrowser`, `DefaultTTY`, clipboard integration, loop-offset handling, and interactive recorder conversion helpers.
 
 ## License
 
-MIT - see [LICENSE](./LICENSE) for details.
-
-Original VHS by [Charmbracelet](https://charm.sh) is also MIT licensed.
+MIT. Original VHS is copyright Charmbracelet, Inc.; this port retains the upstream license and attribution.

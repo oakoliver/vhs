@@ -1,13 +1,14 @@
 /**
  * @oakoliver/vhs — Parser for the VHS Tape language
  *
- * Zero-dependency TypeScript port of Charmbracelet's VHS parser package.
+ * TypeScript port of Charmbracelet VHS v0.11.0 parser behavior.
  *
  * @module
  */
 
-import { Lexer } from './lexer';
-import { Token, TokenType, TokenTypeValue, isSetting, isModifier, toCamel } from './token';
+import { Lexer } from './lexer.js';
+import { TokenType, isSetting, isModifier, toCamel } from './token.js';
+import type { Token, TokenTypeValue } from './token.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -23,6 +24,8 @@ export const CommandTypes: CommandType[] = [
   TokenType.BACKSPACE,
   TokenType.DELETE,
   TokenType.INSERT,
+  TokenType.HOME,
+  TokenType.END,
   TokenType.CTRL,
   TokenType.ALT,
   TokenType.DOWN,
@@ -170,6 +173,8 @@ export class Parser {
       case TokenType.BACKSPACE:
       case TokenType.DELETE:
       case TokenType.INSERT:
+      case TokenType.HOME:
+      case TokenType.END:
       case TokenType.ENTER:
       case TokenType.ESCAPE:
       case TokenType.TAB:
@@ -527,7 +532,7 @@ export class Parser {
         const marginFill = this.cur.literal;
         if (marginFill.startsWith('#')) {
           const hex = marginFill.slice(1);
-          if (!/^[0-9a-fA-F]{6}$/.test(hex)) {
+          if (!/^(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(hex)) {
             this.errors.push(newParserError(this.cur, '"' + marginFill + '" is not a valid color.'));
           }
         }

@@ -1,7 +1,7 @@
 /**
  * @oakoliver/vhs — Token types and structures for the VHS Tape language
  *
- * Zero-dependency TypeScript port of Charmbracelet's VHS token package.
+ * TypeScript port of Charmbracelet VHS v0.11.0 tokens.
  *
  * @module
  */
@@ -133,6 +133,7 @@ export const Keywords: Record<string, TokenTypeValue> = {
   Backspace: TokenType.BACKSPACE,
   Delete: TokenType.DELETE,
   Insert: TokenType.INSERT,
+  Home: TokenType.HOME,
   Ctrl: TokenType.CTRL,
   Alt: TokenType.ALT,
   Shift: TokenType.SHIFT,

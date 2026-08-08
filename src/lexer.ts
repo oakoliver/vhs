@@ -1,12 +1,13 @@
 /**
  * @oakoliver/vhs — Lexer for the VHS Tape language
  *
- * Zero-dependency TypeScript port of Charmbracelet's VHS lexer package.
+ * TypeScript port of Charmbracelet VHS v0.11.0 lexer behavior.
  *
  * @module
  */
 
-import { Token, TokenType, TokenTypeValue, lookupIdentifier, newToken } from './token';
+import { TokenType, lookupIdentifier, newToken } from './token.js';
+import type { Token } from './token.js';
 
 /**
  * Lexer tokenizes the input string into VHS tokens.
@@ -162,14 +163,17 @@ export class Lexer {
    * Read a string delimited by the given end character.
    */
   private readString(endChar: string): string {
-    const startPos = this.pos + 1;
+    let value = '';
     while (true) {
       this.readChar();
-      if (this.ch === endChar || this.ch === '\0' || isNewLine(this.ch)) {
-        break;
+      if (this.ch === '\0' || isNewLine(this.ch)) break;
+      if (this.ch === endChar) {
+        if (this.peekChar() !== endChar) break;
+        this.readChar();
       }
+      value += this.ch;
     }
-    return this.input.slice(startPos, this.pos);
+    return value;
   }
 
   /**
