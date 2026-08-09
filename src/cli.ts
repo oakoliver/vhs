@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { pathToFileURL } from 'url';
+import { fileURLToPath } from 'url';
 import { evaluate, parseTape } from './evaluator.js';
 import { getDefaultShell, getSortedThemeNames } from './vhs.js';
 import {
@@ -286,10 +286,21 @@ export async function runCLI(argv = process.argv.slice(2)): Promise<number> {
   }
 }
 
-const isDirectExecution = process.argv[1]
-  ? import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
-  : false;
-if (isDirectExecution) {
+export function isDirectExecution(
+  argvPath: string | undefined,
+  moduleUrl: string | undefined,
+): boolean {
+  if (typeof argvPath !== 'string' || typeof moduleUrl !== 'string' || !moduleUrl.startsWith('file:')) {
+    return false;
+  }
+  try {
+    return fs.realpathSync(path.resolve(argvPath)) === fs.realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectExecution(process.argv[1], import.meta.url)) {
   runCLI()
     .then((code) => {
       process.exitCode = code;

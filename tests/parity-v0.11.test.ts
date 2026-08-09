@@ -2,12 +2,13 @@ import { describe, expect, test } from 'bun:test';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 import { Lexer } from '../src/lexer';
 import { Parser } from '../src/parser';
 import { TokenType } from '../src/token';
 import { collectMediaOutputPaths, evaluate, type BrowserInterface, type TTYInterface } from '../src/evaluator';
 import type { KeyCode, KeyModifiers } from '../src/command';
-import { parseArgs, runCLI } from '../src/cli';
+import { isDirectExecution, parseArgs, runCLI } from '../src/cli';
 import { dropPrivileges, forceCloseSSHResources, serveSSH, serverConfigFromEnv, serverOutputExtension } from '../src/server';
 import { buildFFmpegArgs, marginFillIsColor, parseHexColor, runFFmpeg } from '../src/ffmpeg';
 import { chromeSandboxArgs, closeBrowserWithTimeout, PuppeteerBrowser } from '../src/browser';
@@ -122,6 +123,41 @@ Shift+"xy"
       keyPath: '/keys/vhs',
       authorizedKeysPath: '/keys/authorized_keys',
     });
+  });
+
+  test('CLI direct-execution detection follows package-bin symlinks', () => {
+    if (process.platform === 'win32') return;
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'vhs-cli-symlink-'));
+    const distDirectory = path.join(directory, 'dist');
+    const binDirectory = path.join(directory, 'node_modules', '.bin');
+    const cliPath = path.join(distDirectory, 'cli.js');
+    const binPath = path.join(binDirectory, 'vhs');
+    try {
+      fs.mkdirSync(distDirectory, { recursive: true });
+      fs.mkdirSync(binDirectory, { recursive: true });
+      fs.writeFileSync(cliPath, '');
+      fs.symlinkSync(path.relative(binDirectory, cliPath), binPath);
+
+      expect(isDirectExecution(binPath, pathToFileURL(cliPath).href)).toBe(true);
+      expect(isDirectExecution(path.join(directory, 'other.js'), pathToFileURL(cliPath).href)).toBe(false);
+      expect(isDirectExecution(undefined, pathToFileURL(cliPath).href)).toBe(false);
+      expect(isDirectExecution(binPath, undefined)).toBe(false);
+      expect(isDirectExecution(binPath, null as unknown as string)).toBe(false);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('CLI direct-execution detection rejects missing and malformed paths', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'vhs-cli-missing-'));
+    const missingPath = path.join(directory, 'missing.js');
+    try {
+      expect(isDirectExecution(missingPath, pathToFileURL(missingPath).href)).toBe(false);
+      expect(isDirectExecution(null as unknown as string, pathToFileURL(missingPath).href)).toBe(false);
+      expect(isDirectExecution(missingPath, 'https://example.com/cli.js')).toBe(false);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test('new refuses overwrite and named margin colors remain distinct from image paths', async () => {
