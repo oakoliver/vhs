@@ -130,7 +130,9 @@ export class PuppeteerBrowser implements BrowserInterface {
   }
 
   async evaluate<T>(fn: string): Promise<T> {
-    return this.activePage.evaluate(fn) as Promise<T>;
+    // Callers pass function source (rod's Page.Eval contract); Puppeteer
+    // evaluates a string as an expression, so it must be invoked here.
+    return this.activePage.evaluate(`(${fn})()`) as Promise<T>;
   }
 
   async getCurrentLine(): Promise<string> {
@@ -156,7 +158,7 @@ export class PuppeteerBrowser implements BrowserInterface {
   }
 
   async waitForIdle(): Promise<void> {
-    await this.activePage.evaluate('() => new Promise(resolve => requestAnimationFrame(resolve))');
+    await this.evaluate('() => new Promise(resolve => requestAnimationFrame(resolve))');
   }
 
   async scroll(direction: number): Promise<void> {
@@ -179,6 +181,19 @@ export class PuppeteerBrowser implements BrowserInterface {
 
   captureCursorCanvas(): Promise<Buffer> {
     return this.captureCanvas('canvas.xterm-cursor-layer');
+  }
+
+  async captureFrame(): Promise<{ text: Buffer; cursor: Buffer }> {
+    const [text, cursor] = await this.activePage.evaluate(() =>
+      ['canvas.xterm-text-layer', 'canvas.xterm-cursor-layer'].map((selector) => {
+        const canvas = (globalThis as typeof globalThis & {
+          document: { querySelector(selector: string): { toDataURL(type: string): string } | null };
+        }).document.querySelector(selector);
+        if (!canvas) throw new Error(`Terminal canvas not found: ${selector}`);
+        return canvas.toDataURL('image/png').slice('data:image/png;base64,'.length);
+      })
+    );
+    return { text: Buffer.from(text, 'base64'), cursor: Buffer.from(cursor, 'base64') };
   }
 
   async setViewport(width: number, height: number): Promise<void> {

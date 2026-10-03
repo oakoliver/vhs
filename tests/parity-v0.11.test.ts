@@ -507,3 +507,66 @@ Output second.mp4
     }
   });
 });
+
+describe('browser recording fidelity', () => {
+  test('PuppeteerBrowser.evaluate invokes function source instead of returning it', async () => {
+    const browser = new PuppeteerBrowser();
+    const evaluated: string[] = [];
+    Object.assign(browser, {
+      page: {
+        evaluate: async (source: string) => {
+          evaluated.push(source);
+          return (0, eval)(source);
+        },
+      },
+    });
+
+    expect(await browser.evaluate<number>('() => 6 * 7')).toBe(42);
+    expect(evaluated).toEqual(['(() => 6 * 7)()']);
+  });
+
+  test('captures slower than the frame interval still fill the elapsed time', async () => {
+    const captureMs = 60;
+    const sleepMs = 600;
+    const browser: BrowserInterface = {
+      async launch() {},
+      async close() {},
+      async waitForTerminal() {},
+      async typeKey() {},
+      async typeKeyChord() {},
+      async typeText() {},
+      async inputText() {},
+      async evaluate<T>() { return undefined as T; },
+      async getCurrentLine() { return '> '; },
+      async getBuffer() { return ['> ']; },
+      async waitForIdle() {},
+      async scroll() {},
+      async captureTextCanvas() { return Buffer.from('text'); },
+      async captureCursorCanvas() { return Buffer.from('cursor'); },
+      async captureFrame() {
+        await new Promise((resolve) => setTimeout(resolve, captureMs));
+        return { text: Buffer.from('text'), cursor: Buffer.from('cursor') };
+      },
+      async setViewport() {},
+    };
+    const tty: TTYInterface = {
+      async start() {},
+      async stop() {},
+      async getPort() { return 7681; },
+    };
+    const framesDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'vhs-fidelity-')), 'frames');
+
+    const result = await evaluate(`
+Output "${framesDir}/"
+Set Framerate 50
+Sleep ${sleepMs}ms
+`, { browser, tty, output: () => {} });
+
+    expect(result.errors).toEqual([]);
+    const frames = fs.readdirSync(framesDir).filter((name) => name.startsWith('frame-text-')).length;
+    // 600ms at 50fps is 30 frames; one 60ms capture per slot would give ~10.
+    expect(frames).toBeGreaterThanOrEqual(27);
+    expect(frames).toBeLessThanOrEqual(36);
+    fs.rmSync(path.dirname(framesDir), { recursive: true, force: true });
+  });
+});

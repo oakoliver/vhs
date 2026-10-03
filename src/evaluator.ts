@@ -111,6 +111,9 @@ export interface BrowserInterface {
   /** Capture cursor canvas as PNG */
   captureCursorCanvas(): Promise<Buffer>;
 
+  /** Capture text and cursor canvases in one round trip (optional, faster) */
+  captureFrame?(): Promise<{ text: Buffer; cursor: Buffer }>;
+
   /** Set viewport size */
   setViewport(width: number, height: number): Promise<void>;
 }
@@ -289,17 +292,30 @@ async function recordFrames(
   const interval = 1000 / options.video.framerate;
   const framesDir = options.video.input;
 
+  const writeFrame = (textBuffer: Buffer, cursorBuffer: Buffer) => {
+    state.frameCounter++;
+    const frameNum = state.frameCounter.toString().padStart(5, '0');
+    fs.writeFileSync(path.join(framesDir, `frame-text-${frameNum}.png`), textBuffer);
+    fs.writeFileSync(path.join(framesDir, `frame-cursor-${frameNum}.png`), cursorBuffer);
+  };
+
+  // Frames are encoded at a fixed framerate, so a capture that overruns its
+  // slot must still account for the slots it consumed; otherwise playback
+  // runs faster than the tape. Missed slots repeat the last captured frame.
+  let lag = 0;
+
   try {
     while (!abortSignal.aborted) {
       const startTime = Date.now();
 
       if (state.recording) {
-        const textBuffer = await raceWithAbort(browser.captureTextCanvas(), abortSignal);
-        const cursorBuffer = await raceWithAbort(browser.captureCursorCanvas(), abortSignal);
-        state.frameCounter++;
-        const frameNum = state.frameCounter.toString().padStart(5, '0');
-        fs.writeFileSync(path.join(framesDir, `frame-text-${frameNum}.png`), textBuffer);
-        fs.writeFileSync(path.join(framesDir, `frame-cursor-${frameNum}.png`), cursorBuffer);
+        const { text: textBuffer, cursor: cursorBuffer } = browser.captureFrame
+          ? await raceWithAbort(browser.captureFrame(), abortSignal)
+          : {
+              text: await raceWithAbort(browser.captureTextCanvas(), abortSignal),
+              cursor: await raceWithAbort(browser.captureCursorCanvas(), abortSignal),
+            };
+        writeFrame(textBuffer, cursorBuffer);
 
         if (state.screenshotNextFrame) {
           options.screenshot.screenshots.set(state.screenshotNextFrame, state.frameCounter);
@@ -307,6 +323,14 @@ async function recordFrames(
           options.screenshot.frameCapturePath = '';
           state.screenshotNextFrame = null;
         }
+
+        lag += Math.max(0, Date.now() - startTime - interval);
+        while (lag >= interval) {
+          writeFrame(textBuffer, cursorBuffer);
+          lag -= interval;
+        }
+      } else {
+        lag = 0;
       }
 
       await waitForFrameInterval(Math.max(0, interval - (Date.now() - startTime)), abortSignal);
