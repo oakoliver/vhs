@@ -525,6 +525,30 @@ describe('browser recording fidelity', () => {
     expect(evaluated).toEqual(['(() => 6 * 7)()']);
   });
 
+  test('PuppeteerBrowser presses key codes so held Shift applies', async () => {
+    const browser = new PuppeteerBrowser();
+    const events: string[] = [];
+    Object.assign(browser, {
+      page: {
+        keyboard: {
+          down: async (key: string) => { events.push(`down:${key}`); },
+          up: async (key: string) => { events.push(`up:${key}`); },
+          press: async (key: string) => { events.push(`press:${key}`); },
+        },
+      },
+    });
+
+    await browser.typeKey('KeyP', { shift: true });
+    await browser.typeKey('Digit7', { shift: true });
+    await browser.typeKey('Period');
+
+    expect(events).toEqual([
+      'down:Shift', 'press:KeyP', 'up:Shift',
+      'down:Shift', 'press:Digit7', 'up:Shift',
+      'press:Period',
+    ]);
+  });
+
   test('captures slower than the frame interval still fill the elapsed time', async () => {
     const captureMs = 60;
     const sleepMs = 600;

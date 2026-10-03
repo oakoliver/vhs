@@ -4,24 +4,11 @@ import type { BrowserInterface } from './evaluator.js';
 import type { KeyCode, KeyModifiers } from './command.js';
 import { withResolvers } from './promise.js';
 
-const punctuationKeys: Partial<Record<KeyCode, KeyInput>> = {
-  Minus: '-',
-  Equal: '=',
-  BracketLeft: '[',
-  BracketRight: ']',
-  Backslash: '\\',
-  Semicolon: ';',
-  Quote: "'",
-  Backquote: '`',
-  Comma: ',',
-  Period: '.',
-  Slash: '/',
-};
-
+// KeyCode values are physical key codes, which Puppeteer resolves through its
+// US layout so held modifiers apply (Shift+KeyP types "P"). Passing the
+// unshifted character instead makes Puppeteer ignore Shift.
 function toKeyInput(code: KeyCode): KeyInput {
-  if (code.startsWith('Key')) return code.slice(3).toLowerCase() as KeyInput;
-  if (code.startsWith('Digit')) return code.slice(5) as KeyInput;
-  return punctuationKeys[code] ?? (code as KeyInput);
+  return code as KeyInput;
 }
 
 export function chromeSandboxArgs(value: string | undefined): string[] {

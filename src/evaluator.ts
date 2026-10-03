@@ -299,6 +299,19 @@ async function recordFrames(
     fs.writeFileSync(path.join(framesDir, `frame-cursor-${frameNum}.png`), cursorBuffer);
   };
 
+  const captureFrame = async () =>
+    browser.captureFrame
+      ? browser.captureFrame()
+      : { text: await browser.captureTextCanvas(), cursor: await browser.captureCursorCanvas() };
+
+  const claimScreenshot = () => {
+    if (!state.screenshotNextFrame) return;
+    options.screenshot.screenshots.set(state.screenshotNextFrame, state.frameCounter);
+    options.screenshot.frameCaptureEnabled = false;
+    options.screenshot.frameCapturePath = '';
+    state.screenshotNextFrame = null;
+  };
+
   // Frames are encoded at a fixed framerate, so a capture that overruns its
   // slot must still account for the slots it consumed; otherwise playback
   // runs faster than the tape. Missed slots repeat the last captured frame.
@@ -309,20 +322,9 @@ async function recordFrames(
       const startTime = Date.now();
 
       if (state.recording) {
-        const { text: textBuffer, cursor: cursorBuffer } = browser.captureFrame
-          ? await raceWithAbort(browser.captureFrame(), abortSignal)
-          : {
-              text: await raceWithAbort(browser.captureTextCanvas(), abortSignal),
-              cursor: await raceWithAbort(browser.captureCursorCanvas(), abortSignal),
-            };
+        const { text: textBuffer, cursor: cursorBuffer } = await raceWithAbort(captureFrame(), abortSignal);
         writeFrame(textBuffer, cursorBuffer);
-
-        if (state.screenshotNextFrame) {
-          options.screenshot.screenshots.set(state.screenshotNextFrame, state.frameCounter);
-          options.screenshot.frameCaptureEnabled = false;
-          options.screenshot.frameCapturePath = '';
-          state.screenshotNextFrame = null;
-        }
+        claimScreenshot();
 
         lag += Math.max(0, Date.now() - startTime - interval);
         while (lag >= interval) {
@@ -337,6 +339,16 @@ async function recordFrames(
     }
   } catch (error) {
     if (!abortSignal.aborted) throw error;
+  }
+
+  try {
+    // A Screenshot as the tape's last command is requested after the final
+    // frame slot; capture that frame now rather than dropping it silently.
+    if (state.recording && state.screenshotNextFrame) {
+      const { text, cursor } = await captureFrame();
+      writeFrame(text, cursor);
+      claimScreenshot();
+    }
   } finally {
     state.totalFrames = state.frameCounter;
   }
