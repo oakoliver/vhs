@@ -612,6 +612,34 @@ describe('browser recording fidelity', () => {
     ]);
   });
 
+  test('terminal setup makes Alt act as Meta on every host platform', async () => {
+    const evaluated: string[] = [];
+    const browser: BrowserInterface = {
+      async launch() {},
+      async close() {},
+      async waitForTerminal() {},
+      async typeKey() {},
+      async typeKeyChord() {},
+      async typeText() {},
+      async inputText() {},
+      async evaluate<T>(fn: string) { evaluated.push(fn); return undefined as T; },
+      async getCurrentLine() { return '> '; },
+      async getBuffer() { return ['> ']; },
+      async waitForIdle() {},
+      async scroll() {},
+      async captureTextCanvas() { return Buffer.from('text'); },
+      async captureCursorCanvas() { return Buffer.from('cursor'); },
+      async setViewport() {},
+    };
+    const tty: TTYInterface = { async start() {}, async stop() {}, async getPort() { return 7681; } };
+
+    const result = await evaluate('Alt+a', { browser, tty, output: () => {} });
+
+    expect(result.errors).toEqual([]);
+    const setup = evaluated.find((fn) => fn.includes('term.options = {'));
+    expect(setup).toContain('macOptionIsMeta: true');
+  });
+
   test('captures slower than the frame interval still fill the elapsed time', async () => {
     const captureMs = 60;
     const sleepMs = 600;

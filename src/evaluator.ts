@@ -551,7 +551,10 @@ export async function evaluate(
         letterSpacing: ${options.letterSpacing},
         lineHeight: ${options.lineHeight},
         theme: ${JSON.stringify(options.theme)},
-        cursorBlink: ${options.cursorBlink}
+        cursorBlink: ${options.cursorBlink},
+        // Headless Chrome reports the host platform; on macOS xterm would
+        // otherwise treat Alt as Option and send nothing for Alt+<key>.
+        macOptionIsMeta: true
       };
       term.fit();
     }`), evalOptions.signal);
