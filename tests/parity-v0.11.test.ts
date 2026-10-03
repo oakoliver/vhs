@@ -549,6 +549,37 @@ describe('browser recording fidelity', () => {
     ]);
   });
 
+  test('Ctrl chords with uppercase letters do not add Shift', async () => {
+    const chords: Array<{ codes: KeyCode[]; modifiers?: KeyModifiers }> = [];
+    const browser: BrowserInterface = {
+      async launch() {},
+      async close() {},
+      async waitForTerminal() {},
+      async typeKey() {},
+      async typeKeyChord(codes, modifiers) { chords.push({ codes, modifiers: { ...modifiers } }); },
+      async typeText() {},
+      async inputText() {},
+      async evaluate<T>() { return undefined as T; },
+      async getCurrentLine() { return '> '; },
+      async getBuffer() { return ['> ']; },
+      async waitForIdle() {},
+      async scroll() {},
+      async captureTextCanvas() { return Buffer.from('text'); },
+      async captureCursorCanvas() { return Buffer.from('cursor'); },
+      async setViewport() {},
+    };
+    const tty: TTYInterface = { async start() {}, async stop() {}, async getPort() { return 7681; } };
+
+    const result = await evaluate('Ctrl+C\nCtrl+c\nCtrl+Shift+D', { browser, tty, output: () => {} });
+
+    expect(result.errors).toEqual([]);
+    expect(chords).toEqual([
+      { codes: ['KeyC'], modifiers: { ctrl: true } },
+      { codes: ['KeyC'], modifiers: { ctrl: true } },
+      { codes: ['KeyD'], modifiers: { ctrl: true, shift: true } },
+    ]);
+  });
+
   test('captures slower than the frame interval still fill the elapsed time', async () => {
     const captureMs = 60;
     const sleepMs = 600;

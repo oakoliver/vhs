@@ -473,7 +473,10 @@ export const executeCtrl: CommandFunc = async (c: Command, ctx: VHSContext) => {
     const keyInfo = key.length === 1 ? keymap[key] : undefined;
     const code = specialKeyMap[key] ?? keyInfo?.code;
     if (!code) throw new Error(`Invalid control argument: ${key}`);
-    if (keyInfo?.shift) modifiers.shift = true;
+    // Letters are case-insensitive in a Ctrl chord (Ctrl+C is ^C, as in a
+    // terminal); only shifted symbols need Shift. Use Ctrl+Shift+<key> to
+    // send Shift explicitly.
+    if (keyInfo?.shift && !/^[A-Z]$/.test(key)) modifiers.shift = true;
     codes.push(code);
   }
 
