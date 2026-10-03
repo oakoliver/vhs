@@ -133,8 +133,7 @@ export class FilterComplexBuilder {
   withWindowBar(barStream: number): this {
     if (this.style.windowBar !== '') {
       this.filterComplex += `;
-[${barStream}]loop=-1[loopbar];
-[loopbar][${this.prevStageName}]overlay=0:${this.style.windowBarSize}[withbar]`;
+[${barStream}][${this.prevStageName}]overlay=0:${this.style.windowBarSize}:eof_action=endall[withbar]`;
       this.prevStageName = 'withbar';
     }
     return this;
@@ -143,11 +142,12 @@ export class FilterComplexBuilder {
   /**
    * Add border radius filter.
    */
-  withBorderRadius(cornerMaskStream: number): this {
+  withBorderRadius(cornerMaskStream: number, shortest = false): this {
     if (this.style.borderRadius !== 0) {
+      // A looped mask never ends; frame-synced alphamerge (ffmpeg 4.4+) must
+      // be told to stop with the frames, older versions stop on their own.
       this.filterComplex += `;
-[${cornerMaskStream}]loop=-1[loopmask];
-[${this.prevStageName}][loopmask]alphamerge[rounded]`;
+[${this.prevStageName}][${cornerMaskStream}]alphamerge${shortest ? '=shortest=1' : ''}[rounded]`;
       this.prevStageName = 'rounded';
     }
     return this;
@@ -203,18 +203,31 @@ export class StreamBuilder {
   private termWidth: number;
   private termHeight: number;
   private input: string;
+  private framerate?: number;
   
   barStream: number = 0;
   cornerStream: number = 0;
   marginStream: number = 0;
 
-  constructor(streamCounter: number, input: string, style: StyleOptions) {
+  /**
+   * With a framerate, the window bar and corner mask become image streams
+   * looped at that rate, so they last as long as the frames they decorate
+   * (ffmpeg 4.x's loop filter needs an explicit size and emits one frame).
+   */
+  constructor(streamCounter: number, input: string, style: StyleOptions, framerate?: number) {
     const { width, height } = calcTermDimensions(style);
     this.counter = streamCounter;
     this.style = style;
     this.termWidth = width;
     this.termHeight = height;
     this.input = input;
+    this.framerate = framerate;
+  }
+
+  private imageInput(file: string): string[] {
+    return this.framerate === undefined
+      ? ['-i', file]
+      : ['-loop', '1', '-framerate', String(this.framerate), '-i', file];
   }
 
   /**
@@ -246,7 +259,7 @@ export class StreamBuilder {
   withBar(): this {
     if (this.style.windowBar !== '') {
       const barPath = path.join(this.input, 'bar.png');
-      this.args.push('-i', barPath);
+      this.args.push(...this.imageInput(barPath));
       this.barStream = this.counter;
       this.counter++;
     }
@@ -259,7 +272,7 @@ export class StreamBuilder {
   withCorner(): this {
     if (this.style.borderRadius !== 0) {
       const maskPath = path.join(this.input, 'mask.png');
-      this.args.push('-i', maskPath);
+      this.args.push(...this.imageInput(maskPath));
       this.cornerStream = this.counter;
       this.counter++;
     }
@@ -319,8 +332,11 @@ export function buildFFmpegArgs(options: {
   videoOpts: VideoOptions;
   outputPath: string;
   format: OutputFormat;
+  /** Whether ffmpeg's alphamerge accepts `shortest` (see alphamergeHasShortest). */
+  alphamergeShortest?: boolean;
 }): string[] {
   const { textFrames, cursorFrames, framerate, videoOpts, outputPath, format } = options;
+  const alphamergeShortest = options.alphamergeShortest ?? true;
   const style = videoOpts.style;
   prepareDecorations(videoOpts.input, style);
 
@@ -335,7 +351,7 @@ export function buildFFmpegArgs(options: {
   ];
 
   // Build streams
-  const streamBuilder = new StreamBuilder(2, videoOpts.input, style);
+  const streamBuilder = new StreamBuilder(2, videoOpts.input, style, framerate);
   streamBuilder.withMargin().withBar().withCorner();
   args.push(...streamBuilder.build());
 
@@ -343,7 +359,7 @@ export function buildFFmpegArgs(options: {
   const filterBuilder = FilterComplexBuilder.forVideo(videoOpts);
   filterBuilder
     .withWindowBar(streamBuilder.barStream)
-    .withBorderRadius(streamBuilder.cornerStream)
+    .withBorderRadius(streamBuilder.cornerStream, alphamergeShortest)
     .withMarginFill(streamBuilder.marginStream);
 
   // Add format-specific filters
@@ -681,6 +697,27 @@ export function runFFmpeg(args: string[], signal?: AbortSignal): Promise<void> {
   return promise;
 }
 
+let alphamergeShortestProbe: Promise<boolean> | null = null;
+
+/**
+ * Reports whether the installed ffmpeg's alphamerge filter accepts the
+ * `shortest` option (it is frame-synced from ffmpeg 4.4; 4.2 lacks it).
+ * Probed once per process.
+ */
+export function alphamergeHasShortest(): Promise<boolean> {
+  alphamergeShortestProbe ??= new Promise((resolve) => {
+    let output = '';
+    const child = spawn('ffmpeg', ['-hide_banner', '-h', 'filter=alphamerge'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stdout?.on('data', (chunk) => { output += chunk; });
+    child.stderr?.on('data', (chunk) => { output += chunk; });
+    child.once('error', () => resolve(true));
+    child.once('close', () => resolve(/^\s+shortest\b/m.test(output)));
+  });
+  return alphamergeShortestProbe;
+}
+
 function ensureOutputDirectory(outputPath: string): void {
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 }
@@ -697,6 +734,7 @@ export async function makeGIF(videoOpts: VideoOptions, signal?: AbortSignal): Pr
   ensureOutputDirectory(outputPath);
 
   const args = buildFFmpegArgs({
+    alphamergeShortest: videoOpts.style.borderRadius ? await alphamergeHasShortest() : true,
     textFrames,
     cursorFrames,
     framerate: videoOpts.framerate,
@@ -720,6 +758,7 @@ export async function makeMP4(videoOpts: VideoOptions, signal?: AbortSignal): Pr
   ensureOutputDirectory(outputPath);
 
   const args = buildFFmpegArgs({
+    alphamergeShortest: videoOpts.style.borderRadius ? await alphamergeHasShortest() : true,
     textFrames,
     cursorFrames,
     framerate: videoOpts.framerate,
@@ -743,6 +782,7 @@ export async function makeWebM(videoOpts: VideoOptions, signal?: AbortSignal): P
   ensureOutputDirectory(outputPath);
 
   const args = buildFFmpegArgs({
+    alphamergeShortest: videoOpts.style.borderRadius ? await alphamergeHasShortest() : true,
     textFrames,
     cursorFrames,
     framerate: videoOpts.framerate,
