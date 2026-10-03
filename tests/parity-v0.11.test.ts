@@ -685,3 +685,39 @@ Sleep ${sleepMs}ms
     fs.rmSync(path.dirname(framesDir), { recursive: true, force: true });
   });
 });
+
+describe('ffmpeg output', () => {
+  // A stand-in ffmpeg on PATH that logs to stderr and exits with $FAKE_EXIT.
+  function withFakeFFmpeg(): { dir: string; env: Record<string, string> } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vhs-fake-ffmpeg-'));
+    fs.writeFileSync(path.join(dir, 'ffmpeg'), '#!/bin/sh\necho "frame=   1 fps=0.0 noisy ffmpeg log" >&2\nexit ${FAKE_EXIT:-0}\n', { mode: 0o755 });
+    return { dir, env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } as Record<string, string> };
+  }
+
+  test('is captured, not printed, when ffmpeg succeeds (as upstream CombinedOutput)', () => {
+    const { dir, env } = withFakeFFmpeg();
+    try {
+      const script = `import { runFFmpeg } from ${JSON.stringify(path.join(import.meta.dir, '..', 'src', 'ffmpeg.ts'))}; await runFFmpeg(['-y']);`;
+      const run = Bun.spawnSync(['bun', '-e', script], { env });
+      expect(run.exitCode).toBe(0);
+      expect(run.stderr.toString()).toBe('');
+      expect(run.stdout.toString()).toBe('');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('is included in the error when ffmpeg fails', async () => {
+    const { dir, env } = withFakeFFmpeg();
+    const previous = process.env.PATH;
+    process.env.PATH = env.PATH;
+    process.env.FAKE_EXIT = '3';
+    try {
+      await expect(runFFmpeg(['-y'])).rejects.toThrow(/ffmpeg exited with code 3[\s\S]*noisy ffmpeg log/);
+    } finally {
+      process.env.PATH = previous;
+      delete process.env.FAKE_EXIT;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
