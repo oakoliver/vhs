@@ -2,6 +2,12 @@
 
 TypeScript/Node/Bun port of [Charmbracelet VHS](https://github.com/charmbracelet/vhs): write terminal recordings as `.tape` files and render GIF, MP4, WebM, PNG-frame, screenshot, and text outputs.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/oakoliver/vhs/main/assets/hero.gif" width="720" alt="A terminal with a colorful window bar, rounded corners and a purple margin prints the vhs tape settings that produced it, then prints Hello from @oakoliver/vhs">
+</p>
+
+<p align="center"><sub>This GIF prints the tape that rendered it. Every picture in this README is rendered by this package from the tapes in <code>assets/tapes/</code>.</sub></p>
+
 **Upstream parity target:** `charmbracelet/vhs` **v0.11.0**. The tape lexer, parser, command evaluator, themes, interactive tape recorder, local CLI, ttyd shell session, browser capture, and ffmpeg render pipeline track that tag. The hosted `vhs publish` workflow is intentionally outside this package's scope.
 
 ## Installation
@@ -15,7 +21,7 @@ bun add @oakoliver/vhs
 ### Runtime prerequisites
 
 - [ttyd](https://github.com/tsl0922/ttyd) 1.7.2 or newer
-- [ffmpeg](https://ffmpeg.org/)
+- [ffmpeg](https://ffmpeg.org/) — `WindowBar` and `BorderRadius` need a recent ffmpeg: 8.1 works, while 4.2 renders a single frame
 - A Puppeteer-compatible Chrome installation (Puppeteer installs one by default)
 - SSH server mode uses the bundled Node SSH implementation; `VHS_UID`/`VHS_GID` privilege dropping is Unix-only because Windows has no process UID/GID equivalent.
 
@@ -35,6 +41,8 @@ scoop install ttyd ffmpeg
 ```
 
 ## CLI
+
+<img src="https://raw.githubusercontent.com/oakoliver/vhs/main/assets/authoring.gif" width="640" alt="vhs new creates demo.tape, vhs validate accepts it, vhs validate reports line and column for a broken tape, and vhs themes lists 348 themes">
 
 ```bash
 # Run a tape (a file, stdin, and multiple output overrides are supported)
@@ -101,6 +109,8 @@ Screenshot terminal.png
 | Process | `Env <name> <value>` |
 | Clipboard | `Copy <string>`, `Paste` |
 | Image | `Screenshot <file.png>` |
+
+<img src="https://raw.githubusercontent.com/oakoliver/vhs/main/assets/themes.png" width="720" alt="The same output rendered with Set Theme Dracula, Catppuccin Latte, TokyoNight and rose-pine">
 
 Settings are `Shell`, `FontFamily`, `FontSize`, `Framerate`, `Height`, `Width`, `LetterSpacing`, `LineHeight`, `PlaybackSpeed`, `TypingSpeed`, `Padding`, `Theme`, `LoopOffset`, `MarginFill`, `Margin`, `WindowBar`, `WindowBarSize`, `BorderRadius`, `WaitTimeout`, `WaitPattern`, and `CursorBlink`.
 
