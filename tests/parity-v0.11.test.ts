@@ -482,6 +482,38 @@ Output second.mp4
     });
   });
 
+  test('window bar and corner mask last as long as the frames on every ffmpeg', () => {
+    const video = defaultVideoOptions();
+    video.style.windowBar = 'Colorful';
+    video.style.borderRadius = 10;
+    const build = (alphamergeShortest?: boolean) => buildFFmpegArgs({
+      textFrames: 'text-%05d.png',
+      cursorFrames: 'cursor-%05d.png',
+      framerate: 30,
+      videoOpts: video,
+      outputPath: 'out.gif',
+      format: 'gif',
+      alphamergeShortest,
+    });
+    try {
+      const args = build();
+      for (const image of ['bar.png', 'mask.png']) {
+        const at = args.findIndex((arg) => arg.endsWith(image));
+        expect(args.slice(at - 5, at + 1)).toEqual(['-loop', '1', '-framerate', '30', '-i', args[at]]);
+      }
+      const filter = args[args.indexOf('-filter_complex') + 1];
+      // ffmpeg 4.x's loop filter without a size emits a single frame.
+      expect(filter).not.toContain('loop=');
+      expect(filter).toContain(`overlay=0:${video.style.windowBarSize}:eof_action=endall[withbar]`);
+      expect(filter).toContain('alphamerge=shortest=1[rounded]');
+
+      const legacy = build(false);
+      expect(legacy[legacy.indexOf('-filter_complex') + 1]).toContain('][4]alphamerge[rounded]');
+    } finally {
+      fs.rmSync(video.input, { recursive: true, force: true });
+    }
+  });
+
   test('frame sequences use image2 framerate before each input', () => {
     const video = defaultVideoOptions();
     try {
