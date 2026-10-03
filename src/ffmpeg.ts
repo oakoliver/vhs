@@ -676,7 +676,15 @@ export function runFFmpeg(args: string[], signal?: AbortSignal): Promise<void> {
     return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error('FFmpeg rendering aborted'));
   }
   const { promise, resolve, reject } = withResolvers<void>();
-  const child = spawn('ffmpeg', args, { stdio: 'inherit' });
+  // As upstream (CombinedOutput): ffmpeg's log is captured and only shown
+  // when it fails, so it never floods the terminal or defeats --quiet.
+  const child = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  let log = '';
+  const keepTail = (chunk: Buffer) => {
+    log = (log + chunk.toString()).slice(-4096);
+  };
+  child.stdout?.on('data', keepTail);
+  child.stderr?.on('data', keepTail);
   const onAbort = () => child.kill('SIGTERM');
   const finish = (error?: Error) => {
     signal?.removeEventListener('abort', onAbort);
@@ -691,7 +699,7 @@ export function runFFmpeg(args: string[], signal?: AbortSignal): Promise<void> {
     } else if (code === 0) {
       finish();
     } else {
-      finish(new Error(`ffmpeg exited with code ${code}`));
+      finish(new Error(`ffmpeg exited with code ${code}${log.trim() ? `\n${log.trimEnd()}` : ''}`));
     }
   });
   return promise;
