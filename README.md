@@ -106,6 +106,8 @@ Settings are `Shell`, `FontFamily`, `FontSize`, `Framerate`, `Height`, `Width`, 
 
 Regex delimiters follow v0.11.0 escaping rules: a slash is escaped by an odd run of preceding backslashes and closes the regex after an even run.
 
+As in upstream, an unquoted argument that starts with `/` is read as a regex, so quote absolute paths: `Output "/tmp/demo.gif"`, `Screenshot "/tmp/frame.png"`.
+
 ## Programmatic API
 
 ```typescript
