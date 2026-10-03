@@ -21,7 +21,7 @@ bun add @oakoliver/vhs
 ### Runtime prerequisites
 
 - [ttyd](https://github.com/tsl0922/ttyd) 1.7.2 or newer
-- [ffmpeg](https://ffmpeg.org/) — `WindowBar` and `BorderRadius` need a recent ffmpeg: 8.1 works, while 4.2 renders a single frame
+- [ffmpeg](https://ffmpeg.org/) (tested with 4.2 and 8.1)
 - A Puppeteer-compatible Chrome installation (Puppeteer installs one by default)
 - SSH server mode uses the bundled Node SSH implementation; `VHS_UID`/`VHS_GID` privilege dropping is Unix-only because Windows has no process UID/GID equivalent.
 
