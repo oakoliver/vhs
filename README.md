@@ -10,6 +10,8 @@ TypeScript/Node/Bun port of [Charmbracelet VHS](https://github.com/charmbracelet
 
 **Upstream parity target:** `charmbracelet/vhs` **v0.11.0**. The tape lexer, parser, command evaluator, themes, interactive tape recorder, local CLI, ttyd shell session, browser capture, and ffmpeg render pipeline track that tag. The hosted `vhs publish` workflow is intentionally outside this package's scope.
 
+**Read the article:** [Getting Started with VHS: Terminal GIFs from TypeScript](https://engineering.oakoliver.com/articles/getting-started-vhs-terminal-gifs-typescript)
+
 ## Installation
 
 ```bash
