@@ -203,31 +203,36 @@ export class StreamBuilder {
   private termWidth: number;
   private termHeight: number;
   private input: string;
-  private framerate?: number;
-  
+  private rate?: number;
+
   barStream: number = 0;
   cornerStream: number = 0;
   marginStream: number = 0;
 
   /**
-   * With a framerate, the window bar and corner mask become image streams
-   * looped at that rate, so they last as long as the frames they decorate
+   * With a rate, every decoration stream (margin, window bar, corner mask)
+   * is generated at that rate. The rate is the one of the filtered frames,
+   * the framerate times the playback speed (see streamRate). A stream that
+   * has no rate of its own is produced at ffmpeg's default of 25 fps, and
+   * the overlay that uses it as its base then caps the whole output at 25
+   * fps no matter what `Set Framerate` says. Looping the bar and mask as
+   * image streams also makes them last as long as the frames they decorate
    * (ffmpeg 4.x's loop filter needs an explicit size and emits one frame).
    */
-  constructor(streamCounter: number, input: string, style: StyleOptions, framerate?: number) {
+  constructor(streamCounter: number, input: string, style: StyleOptions, rate?: number) {
     const { width, height } = calcTermDimensions(style);
     this.counter = streamCounter;
     this.style = style;
     this.termWidth = width;
     this.termHeight = height;
     this.input = input;
-    this.framerate = framerate;
+    this.rate = rate;
   }
 
   private imageInput(file: string): string[] {
-    return this.framerate === undefined
+    return this.rate === undefined
       ? ['-i', file]
-      : ['-loop', '1', '-framerate', String(this.framerate), '-i', file];
+      : ['-loop', '1', '-framerate', String(this.rate), '-i', file];
   }
 
   /**
@@ -237,15 +242,16 @@ export class StreamBuilder {
     if (this.style.marginFill !== '') {
       if (marginFillIsColor(this.style.marginFill)) {
         // Create plain color stream
+        const rate = this.rate === undefined ? '' : `:r=${this.rate}`;
         this.args.push(
           '-f', 'lavfi',
-          '-i', `color=${this.style.marginFill}:s=${this.style.width}x${this.style.height}`,
+          '-i', `color=${this.style.marginFill}:s=${this.style.width}x${this.style.height}${rate}`,
         );
       } else {
         if (!fs.existsSync(this.style.marginFill)) {
           throw new Error(`Unable to read margin file: ${this.style.marginFill}`);
         }
-        this.args.push('-loop', '1', '-i', this.style.marginFill);
+        this.args.push(...this.imageInput(this.style.marginFill));
       }
       this.marginStream = this.counter;
       this.counter++;
@@ -323,6 +329,14 @@ export class StreamBuilder {
 export type OutputFormat = 'gif' | 'mp4' | 'webm' | 'png';
 
 /**
+ * Frame rate of the filtered video. The fps filter fixes it at the framerate
+ * and setpts=PTS/speed then makes the frames arrive speed times as fast.
+ */
+export function streamRate(framerate: number, playbackSpeed: number): number {
+  return Number((framerate * playbackSpeed).toPrecision(12));
+}
+
+/**
  * Build ffmpeg command arguments for video/GIF generation.
  */
 export function buildFFmpegArgs(options: {
@@ -351,7 +365,7 @@ export function buildFFmpegArgs(options: {
   ];
 
   // Build streams
-  const streamBuilder = new StreamBuilder(2, videoOpts.input, style, framerate);
+  const streamBuilder = new StreamBuilder(2, videoOpts.input, style, streamRate(framerate, videoOpts.playbackSpeed));
   streamBuilder.withMargin().withBar().withCorner();
   args.push(...streamBuilder.build());
 

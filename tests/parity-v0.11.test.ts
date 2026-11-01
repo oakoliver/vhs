@@ -6,15 +6,15 @@ import { pathToFileURL } from 'url';
 import { Lexer } from '../src/lexer';
 import { Parser } from '../src/parser';
 import { TokenType } from '../src/token';
-import { collectMediaOutputPaths, evaluate, type BrowserInterface, type TTYInterface } from '../src/evaluator';
-import type { KeyCode, KeyModifiers } from '../src/command';
+import { applyLoopOffset, collectMediaOutputPaths, evaluate, type BrowserInterface, type TTYInterface } from '../src/evaluator';
+import { settingsExecutors, type KeyCode, type KeyModifiers, type VHSContext } from '../src/command';
 import { isDirectExecution, parseArgs, runCLI } from '../src/cli';
 import { dropPrivileges, forceCloseSSHResources, serveSSH, serverConfigFromEnv, serverOutputExtension } from '../src/server';
-import { buildFFmpegArgs, marginFillIsColor, parseHexColor, runFFmpeg } from '../src/ffmpeg';
+import { buildFFmpegArgs, makeGIF, marginFillIsColor, parseHexColor, runFFmpeg, streamRate } from '../src/ffmpeg';
 import { chromeSandboxArgs, closeBrowserWithTimeout, PuppeteerBrowser } from '../src/browser';
 import { executableCandidates, isCommandAvailable } from '../src/tty';
 import { inputToTape } from '../src/record';
-import { defaultVideoOptions } from '../src/vhs';
+import { defaultVHSOptions, defaultVideoOptions } from '../src/vhs';
 import { withResolvers } from '../src/promise';
 import { runClipboardCommand } from '../src/clipboard';
 
@@ -718,6 +718,188 @@ describe('ffmpeg output', () => {
       process.env.PATH = previous;
       delete process.env.FAKE_EXIT;
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('framerate and timing settings', () => {
+  const ffmpegAvailable = Bun.spawnSync(['ffmpeg', '-version']).exitCode === 0
+    && Bun.spawnSync(['ffprobe', '-version']).exitCode === 0;
+
+  const probe = (file: string) => {
+    const out = Bun.spawnSync([
+      'ffprobe', '-v', 'error', '-count_frames', '-select_streams', 'v:0',
+      '-show_entries', 'stream=nb_read_frames,r_frame_rate', '-of', 'csv=p=0', file,
+    ]).stdout.toString().trim().split(',');
+    return { rate: out[0], frames: Number(out[1]) };
+  };
+  // The fps filter may drop the last frame to rounding; the 25 fps bug added
+  // or removed whole seconds worth, so one frame of slack stays meaningful.
+  const near = (frames: number, expected: number) => {
+    expect(frames).toBeGreaterThanOrEqual(expected - 1);
+    expect(frames).toBeLessThanOrEqual(expected);
+  };
+
+  // Renders `count` solid frames through the real ffmpeg command line, as the
+  // evaluator would after a recording, and reports what ffmpeg wrote.
+  async function render(
+    configure: (video: ReturnType<typeof defaultVideoOptions>) => void,
+    count = 20,
+    format: 'gif' | 'mp4' = 'gif',
+  ): Promise<{ rate: string; frames: number }> {
+    const video = defaultVideoOptions();
+    configure(video);
+    const out = path.join(video.input, `out.${format}`);
+    try {
+      for (let frame = 1; frame <= count; frame++) {
+        const name = String(frame).padStart(5, '0');
+        const shade = (frame * 10).toString(16).padStart(2, '0');
+        for (const [kind, color] of [['text', `0x${shade}${shade}${shade}`], ['cursor', '0x000000@0']] as const) {
+          const made = Bun.spawnSync([
+            'ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', `color=${color}:s=${video.style.width}x${video.style.height},format=rgba`,
+            '-frames:v', '1', path.join(video.input, `frame-${kind}-${name}.png`),
+          ]);
+          expect(made.exitCode).toBe(0);
+        }
+      }
+      if (format === 'gif') video.output.gif = out;
+      else video.output.mp4 = out;
+      await (format === 'gif' ? makeGIF(video) : (await import('../src/ffmpeg')).makeMP4(video));
+      return probe(out);
+    } finally {
+      fs.rmSync(video.input, { recursive: true, force: true });
+    }
+  }
+
+  const filterGraph = (args: string[]) => args[args.indexOf('-filter_complex') + 1];
+
+  test('Set Framerate and Set PlaybackSpeed reach the video options', async () => {
+    const ctx = { options: defaultVHSOptions() } as unknown as VHSContext;
+    try {
+      await settingsExecutors.Framerate({ type: TokenType.SET, options: 'Framerate', args: '10' }, ctx);
+      await settingsExecutors.PlaybackSpeed({ type: TokenType.SET, options: 'PlaybackSpeed', args: '2' }, ctx);
+      await settingsExecutors.LoopOffset({ type: TokenType.SET, options: 'LoopOffset', args: '25%' }, ctx);
+      expect(ctx.options.video.framerate).toBe(10);
+      expect(ctx.options.video.playbackSpeed).toBe(2);
+      expect(ctx.options.loopOffset).toBe(25);
+    } finally {
+      fs.rmSync(ctx.options.video.input, { recursive: true, force: true });
+    }
+  });
+
+  test('the frame streams are fed at the framerate and the filter graph resamples to it', () => {
+    const video = defaultVideoOptions();
+    video.framerate = 10;
+    try {
+      const args = buildFFmpegArgs({
+        textFrames: 'text-%05d.png', cursorFrames: 'cursor-%05d.png', framerate: 10, videoOpts: video,
+        outputPath: 'out.gif', format: 'gif',
+      });
+      expect(args.filter((arg) => arg === '-framerate')).toHaveLength(2);
+      expect(filterGraph(args)).toContain('fps=10,setpts=PTS/1[speed]');
+    } finally {
+      fs.rmSync(video.input, { recursive: true, force: true });
+    }
+  });
+
+  test('a colour margin fill is generated at the video rate, not lavfi\'s default 25 fps', () => {
+    // The margin is the base of the last overlay, so its rate is the output's.
+    const video = defaultVideoOptions();
+    video.style.marginFill = '#224488';
+    try {
+      const rateOf = (framerate: number, playbackSpeed: number) => {
+        video.framerate = framerate;
+        video.playbackSpeed = playbackSpeed;
+        const args = buildFFmpegArgs({
+          textFrames: 't', cursorFrames: 'c', framerate, videoOpts: video, outputPath: 'o.gif', format: 'gif',
+        });
+        const source = args.find((arg) => arg.startsWith('color=#224488'));
+        return source?.match(/:r=(.+)$/)?.[1];
+      };
+      expect(rateOf(10, 1)).toBe('10');
+      expect(rateOf(50, 1)).toBe('50');
+      // Frames arrive playbackSpeed times as fast after setpts; none may be dropped.
+      expect(rateOf(10, 2)).toBe('20');
+      expect(rateOf(10, 0.5)).toBe('5');
+      expect(streamRate(50, 1.1)).toBe(55);
+    } finally {
+      fs.rmSync(video.input, { recursive: true, force: true });
+    }
+  });
+
+  test('an image margin fill, the window bar and the corner mask share that rate', () => {
+    const video = defaultVideoOptions();
+    const image = path.join(video.input, 'margin.png');
+    fs.writeFileSync(image, '');
+    video.style.marginFill = image;
+    video.style.windowBar = 'Colorful';
+    video.style.borderRadius = 8;
+    video.framerate = 10;
+    video.playbackSpeed = 2;
+    try {
+      const args = buildFFmpegArgs({
+        textFrames: 't', cursorFrames: 'c', framerate: 10, videoOpts: video, outputPath: 'o.gif', format: 'gif',
+      });
+      for (const file of [image, path.join(video.input, 'bar.png'), path.join(video.input, 'mask.png')]) {
+        const at = args.indexOf(file);
+        expect(args.slice(at - 5, at + 1)).toEqual(['-loop', '1', '-framerate', '20', '-i', file]);
+      }
+    } finally {
+      fs.rmSync(video.input, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(!ffmpegAvailable)('Set Framerate sets the real GIF rate with the default margin fill', async () => {
+    const result = await render((video) => { video.framerate = 10; });
+    expect(result.rate).toBe('10/1');
+    near(result.frames, 20);
+  });
+
+  test.skipIf(!ffmpegAvailable)('Set Framerate sets the real MP4 rate with a window bar and rounded corners', async () => {
+    const result = await render((video) => {
+      video.framerate = 10;
+      video.style.windowBar = 'Colorful';
+      video.style.borderRadius = 8;
+      video.style.margin = 10;
+    }, 20, 'mp4');
+    expect(result.rate).toBe('10/1');
+    near(result.frames, 20);
+  });
+
+  test.skipIf(!ffmpegAvailable)('Set PlaybackSpeed shortens the recording without dropping frames', async () => {
+    const result = await render((video) => {
+      video.framerate = 10;
+      video.playbackSpeed = 2;
+    });
+    expect(result.rate).toBe('20/1');
+    near(result.frames, 20);
+  });
+
+  test.skipIf(!ffmpegAvailable)('the default Framerate is 50', async () => {
+    const result = await render(() => {}, 10);
+    expect(result.rate).toBe('50/1');
+    near(result.frames, 10);
+  });
+
+  test('Set LoopOffset moves the leading frames to the end of the sequence', () => {
+    const options = defaultVHSOptions();
+    try {
+      for (let frame = 1; frame <= 10; frame++) {
+        const name = String(frame).padStart(5, '0');
+        fs.writeFileSync(path.join(options.video.input, `frame-text-${name}.png`), `t${frame}`);
+        fs.writeFileSync(path.join(options.video.input, `frame-cursor-${name}.png`), `c${frame}`);
+      }
+      options.loopOffset = 25;
+      applyLoopOffset(options, 10);
+      // ceil(25% of 10) = 3 frames move behind frame 10; playback starts at 4.
+      expect(options.video.startingFrame).toBe(4);
+      const read = (kind: string, frame: number) =>
+        fs.readFileSync(path.join(options.video.input, `frame-${kind}-${String(frame).padStart(5, '0')}.png`), 'utf8');
+      expect(read('text', 11)).toBe('t1');
+      expect(read('cursor', 13)).toBe('c3');
+      expect(fs.existsSync(path.join(options.video.input, 'frame-text-00001.png'))).toBe(false);
+    } finally {
+      fs.rmSync(options.video.input, { recursive: true, force: true });
     }
   });
 });
