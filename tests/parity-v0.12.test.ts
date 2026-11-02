@@ -453,7 +453,7 @@ describe('VHS v0.12.1 parity', () => {
   });
 
   test('version and parity statement', () => {
-    expect(VERSION).toBe('1.2.0');
+    expect(VERSION).toBe(JSON.parse(fs.readFileSync(path.join(import.meta.dir, '..', 'package.json'), 'utf8')).version);
     const readme = fs.readFileSync(path.join(import.meta.dir, '..', 'README.md'), 'utf8');
     expect(readme).toContain('**v0.12.1**');
     expect(readme).toContain('Since 1.2.0 the default frame rate really is 50 fps');

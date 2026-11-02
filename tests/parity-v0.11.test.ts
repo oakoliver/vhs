@@ -723,8 +723,7 @@ describe('ffmpeg output', () => {
 });
 
 describe('framerate and timing settings', () => {
-  const ffmpegAvailable = Bun.spawnSync(['ffmpeg', '-version']).exitCode === 0
-    && Bun.spawnSync(['ffprobe', '-version']).exitCode === 0;
+  const ffmpegAvailable = Bun.which('ffmpeg') !== null && Bun.which('ffprobe') !== null;
 
   const probe = (file: string) => {
     const out = Bun.spawnSync([
