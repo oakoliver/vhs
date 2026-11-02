@@ -1,7 +1,7 @@
 /**
  * @oakoliver/vhs — VHS core types and options
  *
- * TypeScript port of Charmbracelet VHS v0.11.0 core options.
+ * TypeScript port of Charmbracelet VHS v0.12.1 core options.
  *
  * @module
  */
@@ -329,6 +329,18 @@ const defaultPlaybackSpeed = 1.0;
 export interface StyleOptions {
   width: number;
   height: number;
+  /**
+   * When non-zero, takes precedence over `height`: the terminal is sized to
+   * fit exactly this many rows of the configured font, and `height` is
+   * derived from it. Set by `Set Rows`.
+   */
+  rows: number;
+  /**
+   * When non-zero, takes precedence over `width`: the terminal is sized to
+   * fit exactly this many columns of the configured font, and `width` is
+   * derived from it. Set by `Set Columns`.
+   */
+  columns: number;
   padding: number;
   backgroundColor: string;
   marginFill: string;
@@ -346,6 +358,8 @@ export function defaultStyleOptions(): StyleOptions {
   return {
     width: defaultWidth,
     height: defaultHeight,
+    rows: 0,
+    columns: 0,
     padding: defaultPadding,
     marginFill: DefaultTheme.background,
     margin: 0,
@@ -524,6 +538,10 @@ export interface VHSOptions {
   screenshot: ScreenshotOptions;
   style: StyleOptions;
   envVars: Record<string, string>;
+  /** True once `Set Width` has run; `Set Columns` then conflicts with it. */
+  widthExplicit: boolean;
+  /** True once `Set Height` has run; `Set Rows` then conflicts with it. */
+  heightExplicit: boolean;
 }
 
 /**
@@ -552,6 +570,8 @@ export function defaultVHSOptions(): VHSOptions {
     test: { output: '', golden: '' },
     style,
     envVars: {},
+    widthExplicit: false,
+    heightExplicit: false,
   };
 }
 

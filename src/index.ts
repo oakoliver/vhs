@@ -1,7 +1,7 @@
 /**
  * @oakoliver/vhs — Terminal GIF recorder
  *
- * TypeScript port of Charmbracelet VHS v0.11.0.
+ * TypeScript port of Charmbracelet VHS v0.12.1.
  *
  * @example
  * ```typescript
@@ -221,6 +221,7 @@ export {
   createVHSContext,
   newRecordingState,
   applyLoopOffset,
+  resolveRowsColumns,
 } from './evaluator.js';
 
 // ============================================================================

@@ -8,7 +8,9 @@ TypeScript/Node/Bun port of [Charmbracelet VHS](https://github.com/charmbracelet
 
 <p align="center"><sub>This GIF prints the tape that rendered it. Every picture in this README is rendered by this package from the tapes in <code>assets/tapes/</code>.</sub></p>
 
-**Upstream parity target:** `charmbracelet/vhs` **v0.11.0**. The tape lexer, parser, command evaluator, themes, interactive tape recorder, local CLI, ttyd shell session, browser capture, and ffmpeg render pipeline track that tag. The hosted `vhs publish` workflow is intentionally outside this package's scope.
+**Upstream parity target:** `charmbracelet/vhs` **v0.12.1**. The tape lexer, parser, command evaluator, themes, interactive tape recorder, local CLI, ttyd shell session, browser capture, and ffmpeg render pipeline track that tag. The hosted `vhs publish` workflow is intentionally outside this package's scope. One deliberate deviation: `Set Framerate` is honoured (upstream v0.12.1 still renders everything at 25 fps, [charmbracelet/vhs#750](https://github.com/charmbracelet/vhs/issues/750)); see the [CHANGELOG](CHANGELOG.md).
+
+**Since 1.2.0 the default frame rate really is 50 fps**, as it was always documented. Tapes that never set `Framerate` were rendered at 25 fps by every earlier release and now get twice the frames; add `Set Framerate 25` to keep the old output.
 
 **Read the article:** [Getting Started with VHS: Terminal GIFs from TypeScript](https://engineering.oakoliver.com/articles/getting-started-vhs-terminal-gifs-typescript)
 
@@ -49,6 +51,7 @@ scoop install ttyd ffmpeg
 ```bash
 # Run a tape (a file, stdin, and multiple output overrides are supported)
 vhs demo.tape
+vhs demo            # the .tape extension is optional
 cat demo.tape | vhs -
 vhs -o demo.gif -o demo.mp4 demo.tape
 
@@ -114,7 +117,15 @@ Screenshot terminal.png
 
 <img src="https://raw.githubusercontent.com/oakoliver/vhs/main/assets/themes.png" width="720" alt="The same output rendered with Set Theme Dracula, Catppuccin Latte, TokyoNight and rose-pine">
 
-Settings are `Shell`, `FontFamily`, `FontSize`, `Framerate`, `Height`, `Width`, `LetterSpacing`, `LineHeight`, `PlaybackSpeed`, `TypingSpeed`, `Padding`, `Theme`, `LoopOffset`, `MarginFill`, `Margin`, `WindowBar`, `WindowBarSize`, `BorderRadius`, `WaitTimeout`, `WaitPattern`, and `CursorBlink`.
+Settings are `Shell`, `FontFamily`, `FontSize`, `Framerate`, `Height`, `Width`, `Rows`, `Columns`, `LetterSpacing`, `LineHeight`, `PlaybackSpeed`, `TypingSpeed`, `Padding`, `Theme`, `LoopOffset`, `MarginFill`, `Margin`, `WindowBar`, `WindowBarSize`, `BorderRadius`, `WaitTimeout`, `WaitPattern`, and `CursorBlink`.
+
+`Set Columns <n>` and `Set Rows <n>` size the terminal in character cells instead of pixels. The pixel size is derived from the font settings (`FontSize`, `FontFamily`, `LetterSpacing`, and `LineHeight` for rows) plus `Padding`, `Margin` and `WindowBar`. `Columns` cannot be combined with `Width`, and `Rows` cannot be combined with `Height`, in either order; every other pairing (`Width` + `Rows`, `Height` + `Columns`, `Rows` + `Columns`) is fine.
+
+```tape
+Set FontSize 32
+Set Rows 10
+Set Columns 40
+```
 
 Regex delimiters follow v0.11.0 escaping rules: a slash is escaped by an odd run of preceding backslashes and closes the regex after an even run.
 

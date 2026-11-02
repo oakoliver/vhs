@@ -1,7 +1,7 @@
 /**
  * @oakoliver/vhs — Token types and structures for the VHS Tape language
  *
- * TypeScript port of Charmbracelet VHS v0.11.0 tokens.
+ * TypeScript port of Charmbracelet VHS v0.12.1 tokens.
  *
  * @module
  */
@@ -88,6 +88,8 @@ export const TokenType = {
   PLAYBACK_SPEED: 'PLAYBACK_SPEED',
   HEIGHT: 'HEIGHT',
   WIDTH: 'WIDTH',
+  ROWS: 'ROWS',
+  COLUMNS: 'COLUMNS',
   LETTER_SPACING: 'LETTER_SPACING',
   LINE_HEIGHT: 'LINE_HEIGHT',
   TYPING_SPEED: 'TYPING_SPEED',
@@ -169,6 +171,8 @@ export const Keywords: Record<string, TokenTypeValue> = {
   Padding: TokenType.PADDING,
   Theme: TokenType.THEME,
   Width: TokenType.WIDTH,
+  Rows: TokenType.ROWS,
+  Columns: TokenType.COLUMNS,
   LoopOffset: TokenType.LOOP_OFFSET,
   WaitTimeout: TokenType.WAIT_TIMEOUT,
   WaitPattern: TokenType.WAIT_PATTERN,
@@ -198,6 +202,8 @@ const SettingTypes = new Set<TokenTypeValue>([
   TokenType.PLAYBACK_SPEED,
   TokenType.HEIGHT,
   TokenType.WIDTH,
+  TokenType.ROWS,
+  TokenType.COLUMNS,
   TokenType.PADDING,
   TokenType.LOOP_OFFSET,
   TokenType.MARGIN_FILL,

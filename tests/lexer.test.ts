@@ -11,6 +11,8 @@ describe('Lexer', () => {
 Output examples/out.gif
 Set FontSize 42
 Set Padding 5
+Set Rows 40
+Set Columns 100
 Set CursorBlink false
 Type "echo 'Hello, world!'"
 Enter
@@ -44,6 +46,12 @@ Wait+Screen@1m /foo\\\\\\/bar/`;
       { expectedType: TokenType.SET, expectedLiteral: 'Set' },
       { expectedType: TokenType.PADDING, expectedLiteral: 'Padding' },
       { expectedType: TokenType.NUMBER, expectedLiteral: '5' },
+      { expectedType: TokenType.SET, expectedLiteral: 'Set' },
+      { expectedType: TokenType.ROWS, expectedLiteral: 'Rows' },
+      { expectedType: TokenType.NUMBER, expectedLiteral: '40' },
+      { expectedType: TokenType.SET, expectedLiteral: 'Set' },
+      { expectedType: TokenType.COLUMNS, expectedLiteral: 'Columns' },
+      { expectedType: TokenType.NUMBER, expectedLiteral: '100' },
       { expectedType: TokenType.SET, expectedLiteral: 'Set' },
       { expectedType: TokenType.CURSOR_BLINK, expectedLiteral: 'CursorBlink' },
       { expectedType: TokenType.BOOLEAN, expectedLiteral: 'false' },

@@ -635,4 +635,16 @@ Show`;
 
     expect(errors.length).toBeGreaterThan(0);
   });
+
+  // Ported from Go parser/parser_test.go TestParseSetRowsColumns (v0.12.0).
+  test('parses Set Rows and Set Columns', () => {
+    const parser = new Parser(new Lexer(`
+Set Rows 40
+Set Columns 100`));
+    expect(parser.parse()).toEqual([
+      { type: TokenType.SET, options: 'Rows', args: '40' },
+      { type: TokenType.SET, options: 'Columns', args: '100' },
+    ]);
+    expect(parser.getErrors()).toEqual([]);
+  });
 });

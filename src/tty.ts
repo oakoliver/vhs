@@ -1,7 +1,7 @@
 /**
  * @oakoliver/vhs — TTY spawning utilities
  *
- * TypeScript port of Charmbracelet VHS v0.11.0 ttyd behavior.
+ * TypeScript port of Charmbracelet VHS v0.12.1 ttyd behavior.
  *
  * @module
  */

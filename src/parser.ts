@@ -1,7 +1,7 @@
 /**
  * @oakoliver/vhs — Parser for the VHS Tape language
  *
- * TypeScript port of Charmbracelet VHS v0.11.0 parser behavior.
+ * TypeScript port of Charmbracelet VHS v0.12.1 parser behavior.
  *
  * @module
  */

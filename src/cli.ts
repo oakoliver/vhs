@@ -12,7 +12,7 @@ import {
 import { recordInteractive } from './record.js';
 import { serveSSH, serverConfigFromEnv } from './server.js';
 
-export const VERSION = '1.1.2';
+export const VERSION = '1.2.0';
 
 export const HELP = `VHS — Terminal GIF recorder
 
@@ -50,6 +50,7 @@ Settings:
   Set Shell <name>
   Set FontFamily <name>
   Set FontSize|Width|Height|Padding|Margin|WindowBarSize|BorderRadius <number>
+  Set Columns|Rows <number>       (terminal size in cells; not with Width|Height)
   Set LetterSpacing|LineHeight|Framerate|PlaybackSpeed <number>
   Set TypingSpeed|WaitTimeout <time>
   Set Theme <name|json>, Set LoopOffset <percent>
@@ -209,8 +210,22 @@ function validateTapes(files: string[]): boolean {
   return valid;
 }
 
+/**
+ * Resolve the tape named on the command line. As upstream (v0.12.0), a name
+ * that does not end in `.tape` has the extension added, so `vhs demo` runs
+ * `demo.tape`. Unlike upstream, a name without the extension that exists on
+ * disk while `<name>.tape` does not (for example `demo.vhs`) is still read as
+ * given instead of failing on `demo.vhs.tape`.
+ */
+export function resolveTapePath(file: string): string {
+  if (file.endsWith('.tape')) return file;
+  const withExtension = `${file}.tape`;
+  if (!fs.existsSync(withExtension) && fs.existsSync(file) && fs.statSync(file).isFile()) return file;
+  return withExtension;
+}
+
 function readTape(file: string | undefined): string {
-  if (file && file !== '-') return fs.readFileSync(file, 'utf8');
+  if (file && file !== '-') return fs.readFileSync(resolveTapePath(file), 'utf8');
   if (process.stdin.isTTY) throw new Error('no input provided');
   return fs.readFileSync(0, 'utf8');
 }

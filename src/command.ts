@@ -1,7 +1,7 @@
 /**
  * @oakoliver/vhs — Command execution for VHS
  *
- * TypeScript port of Charmbracelet VHS v0.11.0 command execution.
+ * TypeScript port of Charmbracelet VHS v0.12.1 command execution.
  *
  * This module defines command executors that operate on a VHS instance
  * with browser automation (puppeteer/playwright).
@@ -689,11 +689,34 @@ export const settingsExecutors: Readonly<Record<string, CommandFunc>> = {
   },
 
   Height: async (c, ctx) => {
-    ctx.options.video.style.height = parseIntegerSetting(c.args, 'height');
+    const height = parseIntegerSetting(c.args, 'height');
+    if (ctx.options.video.style.rows > 0) throw new Error('cannot set both Height and Rows');
+    ctx.options.video.style.height = height;
+    ctx.options.heightExplicit = true;
   },
 
   Width: async (c, ctx) => {
-    ctx.options.video.style.width = parseIntegerSetting(c.args, 'width');
+    const width = parseIntegerSetting(c.args, 'width');
+    if (ctx.options.video.style.columns > 0) throw new Error('cannot set both Width and Columns');
+    ctx.options.video.style.width = width;
+    ctx.options.widthExplicit = true;
+  },
+
+  // Rows and Columns size the terminal in character cells. They are resolved
+  // to a pixel Width/Height once the terminal has been set up (see
+  // resolveRowsColumns in the evaluator) and override Height/Width then.
+  Rows: async (c, ctx) => {
+    const rows = parseIntegerSetting(c.args, 'rows');
+    if (rows <= 0) throw new Error('rows must be a positive integer');
+    if (ctx.options.heightExplicit) throw new Error('cannot set both Height and Rows');
+    ctx.options.video.style.rows = rows;
+  },
+
+  Columns: async (c, ctx) => {
+    const columns = parseIntegerSetting(c.args, 'columns');
+    if (columns <= 0) throw new Error('columns must be a positive integer');
+    if (ctx.options.widthExplicit) throw new Error('cannot set both Width and Columns');
+    ctx.options.video.style.columns = columns;
   },
 
   LetterSpacing: async (c, ctx) => {

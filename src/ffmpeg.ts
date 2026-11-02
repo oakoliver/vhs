@@ -1,7 +1,7 @@
 /**
  * @oakoliver/vhs — FFmpeg filter complex and stream builders
  *
- * TypeScript port of Charmbracelet VHS v0.11.0 ffmpeg behavior.
+ * TypeScript port of Charmbracelet VHS v0.12.1 ffmpeg behavior.
  *
  * @module
  */

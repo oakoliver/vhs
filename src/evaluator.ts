@@ -1,7 +1,7 @@
 /**
  * @oakoliver/vhs — Evaluator for VHS tape files
  *
- * TypeScript port of Charmbracelet VHS v0.11.0 evaluation.
+ * TypeScript port of Charmbracelet VHS v0.12.1 evaluation.
  *
  * @module
  */
@@ -11,7 +11,7 @@ import { Parser, formatParserError } from './parser.js';
 import type { Command, ParserError } from './parser.js';
 import { TokenType } from './token.js';
 import { defaultVHSOptions } from './vhs.js';
-import type { VHSOptions } from './vhs.js';
+import type { StyleOptions, VHSOptions } from './vhs.js';
 import { executeCommand } from './command.js';
 import type { VHSContext, KeyCode, KeyModifiers } from './command.js';
 import { DefaultTTY } from './tty.js';
@@ -431,6 +431,126 @@ function getMinDimensions(options: VHSOptions): { minWidth: number; minHeight: n
   return { minWidth, minHeight };
 }
 
+const dimensionProbeAttempts = 6;
+const dimensionCorrectionAttempts = 5;
+
+/** Round up to an even number: MP4 and WebM encoders need even dimensions. */
+function roundUpToEven(n: number): number {
+  return n % 2 !== 0 ? n + 1 : n;
+}
+
+function describeGrid(columns: number, rows: number): string {
+  if (columns > 0 && rows > 0) return `${columns} columns x ${rows} rows`;
+  if (columns > 0) return `${columns} columns`;
+  return `${rows} rows`;
+}
+
+/**
+ * Derive the pixel width/height that render the requested number of terminal
+ * columns/rows, overwriting `style.width` / `style.height` in place (upstream
+ * `resolveRowsColumns`).
+ *
+ * There is no font metrics API on the Node side, so this probes the live
+ * xterm.js instance: it sets a candidate viewport, fits the terminal, reads
+ * back `term.cols` / `term.rows`, derives the cell size from that ratio, and
+ * then nudges the size until the fit addon (which floors container size over
+ * cell size) reports exactly the requested grid. Both loops are bounded and
+ * an error is thrown rather than recording at the wrong size.
+ */
+export async function resolveRowsColumns(
+  browser: BrowserInterface,
+  style: StyleOptions,
+  padding: number,
+  margin: number,
+  bar: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  const measure = async (w: number, h: number): Promise<{ cols: number; rows: number }> => {
+    await raceWithAbort(browser.setViewport(w, h), signal);
+    await raceWithAbort(browser.evaluate('() => term.fit()'), signal);
+    const dims = await raceWithAbort(
+      browser.evaluate<{ cols?: number; rows?: number } | undefined>('() => ({ cols: term.cols, rows: term.rows })'),
+      signal,
+    );
+    return { cols: Number(dims?.cols) || 0, rows: Number(dims?.rows) || 0 };
+  };
+
+  let probeWidth = style.width - 2 * padding - 2 * margin;
+  let probeHeight = style.height - 2 * padding - 2 * margin - bar;
+
+  let cellWidth = 0;
+  let cellHeight = 0;
+  let measured = false;
+  let lastCols = 0;
+  let lastRows = 0;
+  for (let attempt = 0; attempt < dimensionProbeAttempts; attempt++) {
+    const { cols, rows } = await measure(probeWidth, probeHeight);
+    lastCols = cols;
+    lastRows = rows;
+
+    const tooSmall =
+      cols <= 0 ||
+      rows <= 0 ||
+      (style.columns > 0 && cols < style.columns) ||
+      (style.rows > 0 && rows < style.rows);
+    if (!tooSmall) {
+      cellWidth = probeWidth / cols;
+      cellHeight = probeHeight / rows;
+      measured = true;
+      break;
+    }
+    probeWidth *= 2;
+    probeHeight *= 2;
+  }
+
+  // Without a measurement there is no cell size to scale by, and carrying on
+  // would size the viewport to 0x0.
+  if (!measured) {
+    throw new Error(
+      `could not fit ${describeGrid(style.columns, style.rows)}: terminal measured ` +
+        `${lastCols} columns x ${lastRows} rows at ${probeWidth}x${probeHeight} pixels ` +
+        `after ${dimensionProbeAttempts} attempts`,
+    );
+  }
+
+  let contentWidth = probeWidth;
+  let contentHeight = probeHeight;
+  if (style.columns > 0) contentWidth = Math.round(cellWidth * style.columns);
+  if (style.rows > 0) contentHeight = Math.round(cellHeight * style.rows);
+
+  let corrected = false;
+  for (let attempt = 0; attempt < dimensionCorrectionAttempts; attempt++) {
+    const { cols, rows } = await measure(contentWidth, contentHeight);
+    lastCols = cols;
+    lastRows = rows;
+
+    let converged = true;
+    if (style.columns > 0 && cols !== style.columns) {
+      contentWidth += Math.round((style.columns - cols) * cellWidth);
+      converged = false;
+    }
+    if (style.rows > 0 && rows !== style.rows) {
+      contentHeight += Math.round((style.rows - rows) * cellHeight);
+      converged = false;
+    }
+    if (converged) {
+      corrected = true;
+      break;
+    }
+  }
+
+  // Recording now would silently produce the wrong number of rows/columns.
+  if (!corrected) {
+    throw new Error(
+      `could not resolve a viewport for ${describeGrid(style.columns, style.rows)}: ` +
+        `closest match was ${lastCols} columns x ${lastRows} rows after ${dimensionCorrectionAttempts} attempts`,
+    );
+  }
+
+  if (style.columns > 0) style.width = roundUpToEven(contentWidth + 2 * padding + 2 * margin);
+  if (style.rows > 0) style.height = roundUpToEven(contentHeight + 2 * padding + 2 * margin + bar);
+}
+
 function abortError(signal: AbortSignal): Error {
   return signal.reason instanceof Error ? signal.reason : new Error('Evaluation aborted');
 }
@@ -541,9 +661,9 @@ export async function evaluate(
     const style = options.video.style;
     const margin = style.marginFill ? style.margin : 0;
     const windowBar = style.windowBar ? style.windowBarSize : 0;
-    const width = style.width - 2 * style.padding - 2 * margin;
-    const height = style.height - 2 * style.padding - 2 * margin - windowBar;
-    await raceWithAbort(browser.setViewport(width, height), evalOptions.signal);
+
+    // The terminal options come first: they decide the pixel size of a
+    // character cell, which Set Rows / Set Columns need to size the viewport.
     await raceWithAbort(browser.evaluate(`() => {
       term.options = {
         fontSize: ${options.fontSize},
@@ -556,8 +676,16 @@ export async function evaluate(
         // otherwise treat Alt as Option and send nothing for Alt+<key>.
         macOptionIsMeta: true
       };
-      term.fit();
     }`), evalOptions.signal);
+
+    if (style.rows > 0 || style.columns > 0) {
+      await resolveRowsColumns(browser, style, style.padding, margin, windowBar, evalOptions.signal);
+    }
+
+    const width = style.width - 2 * style.padding - 2 * margin;
+    const height = style.height - 2 * style.padding - 2 * margin - windowBar;
+    await raceWithAbort(browser.setViewport(width, height), evalOptions.signal);
+    await raceWithAbort(browser.evaluate('() => term.fit()'), evalOptions.signal);
 
     fs.rmSync(options.video.input, { recursive: true, force: true });
     fs.mkdirSync(options.video.input, { recursive: true });
